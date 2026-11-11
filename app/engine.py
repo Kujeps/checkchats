@@ -14,6 +14,8 @@ from . import db, geo, heuristics, llm, proxycheck
 from .accounts import effective_proxy, make_client
 from .checker import Checker, ChatGone, NeedResolve
 from .proxycheck import net_error_text
+from telethon.tl.functions.contacts import ResolveUsernameRequest, SearchRequest
+from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest, SearchGlobalRequest
 
 log = logging.getLogger("engine")
 LOG = deque(maxlen=400)
@@ -61,6 +63,19 @@ async def check_global_proxy(force=False) -> dict:
             # аккаунты, упавшие из-за прокси, снова можно запускать
             db.q("UPDATE accounts SET status='new', last_error=NULL WHERE status='proxy_error'")
         return r
+
+
+FLOOD_LABEL = {"resolve": "поиск чатов по username", "search": "поиск новых чатов", "all": "все запросы"}
+
+
+def flood_kind(e) -> str:
+    """На какой тип запросов действует FloodWait: Telegram ограничивает каждый метод отдельно."""
+    r = getattr(e, "request", None)
+    if isinstance(r, (ResolveUsernameRequest, CheckChatInviteRequest, ImportChatInviteRequest)):
+        return "resolve"
+    if isinstance(r, (SearchRequest, SearchGlobalRequest)):
+        return "search"
+    return "all"
 
 
 def _seconds_to_midnight():
@@ -281,10 +296,27 @@ class Worker:
 
     def _has_work(self, s) -> bool:
         """Есть ли аккаунту чем заняться в включённых режимах (поиск / проверка)."""
-        if s["run_check"] and self.can_resolve():
+        if s["run_check"] and self.can_resolve() and not self._flood_left("resolve"):
             return True
-        return bool(s["run_search"] and self.can_search()
+        return bool(s["run_search"] and self.can_search() and not self._flood_left("search")
                     and db.one("SELECT 1 AS x FROM queries WHERE status='pending' LIMIT 1"))
+
+    def _flood_left(self, kind) -> float:
+        """Сколько секунд ещё действует FloodWait для этого типа запросов (общий учитывается всегда)."""
+        a = self._acc()
+        ends = [a["flood_until"] or 0]
+        if kind in ("resolve", "search"):
+            ends.append(a[f"flood_{kind}_until"] or 0)
+        return max(0.0, max(ends) - time.time())
+
+    def _flood_wait_for_modes(self, s) -> float:
+        """Если все включённые режимы упираются во FloodWait — сколько ждать до ближайшего освобождения."""
+        waits = []
+        if s["run_check"] and self.can_resolve():
+            waits.append(self._flood_left("resolve"))
+        if s["run_search"] and self.can_search():
+            waits.append(self._flood_left("search"))
+        return min(waits) if waits and all(waits) else 0
 
     def _limited(self, s) -> bool:
         """Во всех включённых режимах дневные лимиты исчерпаны."""
@@ -365,7 +397,7 @@ class Worker:
         try:
             while not self.engine.stopping:
                 acc = db.one("SELECT * FROM accounts WHERE id=?", (self.acc_id,))
-                if acc is None or acc["status"] in ("dead", "frozen", "disabled"):
+                if acc is None or acc["status"] in ("dead", "frozen", "disabled") or not acc["enabled"]:
                     return
                 # Отдыхаем без места в очереди, чтобы его занял другой аккаунт
                 if acc["flood_until"] and acc["flood_until"] > time.time():
@@ -382,8 +414,13 @@ class Worker:
                     continue
                 if not self._has_work(s):
                     # нечем заняться в выбранных режимах — ждём без места в очереди
-                    self.state = "paused" if not (s["run_check"] or s["run_search"]) else "idle"
-                    await self._sleep(5)
+                    wait = self._flood_wait_for_modes(s)
+                    if wait:
+                        self.state = "flood"     # нужные режимы заблокированы FloodWait
+                        await self._sleep(min(wait + 1, 30))
+                    else:
+                        self.state = "paused" if not (s["run_check"] or s["run_search"]) else "idle"
+                        await self._sleep(5)
                     continue
                 self.state = "queue"
                 if not await self.engine.slots.acquire(self.engine):
@@ -412,12 +449,14 @@ class Worker:
         self.need_rest = False
         while not self.engine.stopping:
             s = self.engine.s = db.get_settings()
-            if s["run_search"] and await self._maybe_search(checker, s):
+            if not self._acc()["enabled"]:
+                return "idle"            # аккаунт исключили из работы на ходу
+            if s["run_search"] and not self._flood_left("search") and await self._maybe_search(checker, s):
                 if self.need_rest:
                     return "rest"
                 await self._pause(s)
                 continue
-            if not s["run_check"] or not self.can_resolve():
+            if not s["run_check"] or not self.can_resolve() or self._flood_left("resolve"):
                 if self._has_work(s):
                     # проверять нечего или лимит кончился, но ещё есть поисковые запросы
                     self.state = "idle"
@@ -451,15 +490,23 @@ class Worker:
     async def _pause(self, s):
         await self._sleep(random.uniform(s["delay_min"], max(s["delay_min"], s["delay_max"])))
 
-    async def _flood(self, seconds, s):
+    async def _flood(self, seconds, s, kind="all"):
         if seconds <= s["max_flood_sleep"]:
             await self._sleep(seconds + 1)
             return
-        # Долгий FloodWait: отдаём место в очереди и отдыхаем без него
-        self.state = "flood"
-        self._set("flood", f"FloodWait {seconds} c", flood_until=time.time() + seconds)
-        say(f"[{self.name}] FloodWait {seconds} c — уступает место и отдыхает", "warn")
-        self.need_rest = True
+        until = time.time() + seconds
+        till = datetime.fromtimestamp(until).strftime("%H:%M")
+        if kind == "all":
+            # Долгий FloodWait на всё: отдаём место в очереди и отдыхаем без него
+            self.state = "flood"
+            self._set("flood", f"FloodWait до {till}", flood_until=until)
+            say(f"[{self.name}] FloodWait {seconds} c — уступает место и отдыхает до {till}", "warn")
+            self.need_rest = True
+            return
+        # FloodWait на один тип запросов — остальным аккаунт заниматься может
+        db.q(f"UPDATE accounts SET flood_{kind}_until=?, last_error=? WHERE id=?",
+             (until, f"FloodWait на {FLOOD_LABEL[kind]} до {till}", self.acc_id))
+        say(f"[{self.name}] FloodWait на {FLOOD_LABEL[kind]} до {till} — пока занимается другим", "warn")
 
     async def _check(self, checker, chat, s):
         """True — продолжаем, False — аккаунт больше не работает."""
@@ -481,7 +528,7 @@ class Worker:
             return True
         except errors.FloodWaitError as e:
             db.q("UPDATE chats SET status='pending' WHERE id=?", (chat["id"],))
-            await self._flood(e.seconds, s)
+            await self._flood(e.seconds, s, flood_kind(e))
             return True
         except DEAD_ERRORS + FROZEN_ERRORS as e:
             db.q("UPDATE chats SET status='pending' WHERE id=?", (chat["id"],))
@@ -563,7 +610,7 @@ class Worker:
             if prio:
                 save()   # часть уже нашли (например, по названиям) — не теряем её
             db.q("UPDATE queries SET status='pending' WHERE id=?", (qrow["id"],))
-            await self._flood(e.seconds, s)
+            await self._flood(e.seconds, s, flood_kind(e))
         except Exception as e:  # noqa: BLE001
             db.q("UPDATE queries SET status='error', error=? WHERE id=?", (f"{type(e).__name__}: {e}"[:300], qrow["id"]))
             say(f"[{self.name}] поиск «{q}»: {type(e).__name__}: {e}", "warn")
@@ -610,7 +657,8 @@ class Engine:
                 say(f"Общий прокси не работает: {r['error']}. Аккаунты, которые через него идут, не запущены",
                     "error")
         accs, no_proxy, bad_global = [], 0, 0
-        for acc in db.all_("SELECT * FROM accounts WHERE status NOT IN ('dead', 'frozen', 'disabled') ORDER BY id"):
+        for acc in db.all_("SELECT * FROM accounts WHERE status NOT IN ('dead', 'frozen', 'disabled') "
+                           "AND COALESCE(enabled, 1)=1 ORDER BY id"):
             proxy, is_global = effective_proxy(acc, self.s)
             if is_global and not global_ok:
                 bad_global += 1

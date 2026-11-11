@@ -176,11 +176,19 @@ def scan_accounts_folder(force=False):
 @app.get("/api/accounts")
 async def list_accounts():
     scan_accounts_folder()
-    rows = db.all_("SELECT id, name, proxy, status, flood_until, day, resolves_today, searches_today, joins_today, "
-                   "checked_total, me, last_error, proxy_ok, proxy_info FROM accounts ORDER BY id")
+    rows = db.all_("SELECT id, name, proxy, status, flood_until, flood_resolve_until, flood_search_until, day, "
+                   "resolves_today, searches_today, joins_today, checked_total, me, last_error, proxy_ok, proxy_info, "
+                   "enabled, tag, note, params, added_at FROM accounts ORDER BY id")
     today = db.today()
     s = db.get_settings()
+    now = time.time()
     for r in rows:
+        params = json.loads(r.pop("params") or "{}")
+        r["phone"] = params.get("phone")
+        r["twofa"] = bool(params.get("twoFA"))
+        for k in ("flood_until", "flood_resolve_until", "flood_search_until"):
+            if not r[k] or r[k] < now:
+                r[k] = None                     # истёкший FloodWait не показываем
         own = r.pop("proxy")
         _, r["uses_global"] = accounts.effective_proxy({"proxy": own}, s)
         r["proxy_label"] = accounts.proxy_label(own) if own and not r["uses_global"] else ""
@@ -265,7 +273,7 @@ async def net_direct():
     return await proxycheck.check_direct()
 
 
-@app.post("/api/accounts/{acc_id}")
+@app.post("/api/accounts/{acc_id:int}")
 async def update_account(acc_id: int, request: Request):
     data = await request.json()
     if acc_id in engine.workers:
@@ -278,17 +286,61 @@ async def update_account(acc_id: int, request: Request):
             except ValueError as e:
                 raise HTTPException(400, str(e))
         db.q("UPDATE accounts SET proxy=? WHERE id=?", (p or None, acc_id))
-    if data.get("status") in ("new", "disabled"):
-        db.q("UPDATE accounts SET status=?, flood_until=0, last_error=NULL WHERE id=?", (data["status"], acc_id))
+    if data.get("status") in ("new", "disabled"):   # старый интерфейс: «откл.» / «включить»
+        db.q("UPDATE accounts SET enabled=? WHERE id=?", (int(data["status"] == "new"), acc_id))
     return {"ok": True}
 
 
-@app.delete("/api/accounts/{acc_id}")
+@app.delete("/api/accounts/{acc_id:int}")
 async def delete_account(acc_id: int):
     if acc_id in engine.workers:
         raise HTTPException(400, "Аккаунт работает — сначала остановите процесс")
     accounts.delete_account(acc_id)
     return {"ok": True}
+
+
+@app.get("/api/accounts/tags")
+async def account_tags():
+    return [r["tag"] for r in db.all_("SELECT DISTINCT tag FROM accounts WHERE tag IS NOT NULL AND tag!='' ORDER BY tag")]
+
+
+@app.post("/api/accounts/bulk")
+async def accounts_bulk(request: Request):
+    """Массовые действия менеджера аккаунтов над выбранными ids."""
+    data = await request.json()
+    ids = [int(x) for x in data.get("ids") or []]
+    action, value = data.get("action"), data.get("value")
+    if not ids and action != "only":
+        raise HTTPException(400, "Не выбрано ни одного аккаунта")
+    ph = ",".join("?" * len(ids)) or "NULL"
+    if action == "enable":
+        db.q(f"UPDATE accounts SET enabled=1 WHERE id IN ({ph})", ids)
+    elif action == "disable":
+        db.q(f"UPDATE accounts SET enabled=0 WHERE id IN ({ph})", ids)      # работающие сами выйдут из работы
+    elif action == "only":
+        db.q(f"UPDATE accounts SET enabled=CASE WHEN id IN ({ph}) THEN 1 ELSE 0 END", ids)
+    elif action == "reset":
+        db.q(f"""UPDATE accounts SET flood_until=0, flood_resolve_until=0, flood_search_until=0, last_error=NULL,
+                 status=CASE WHEN status IN ('dead','frozen','proxy_error','flood') THEN 'new' ELSE status END
+                 WHERE id IN ({ph})""", ids)
+    elif action == "tag":
+        db.q(f"UPDATE accounts SET tag=? WHERE id IN ({ph})", [(value or "").strip() or None, *ids])
+    elif action == "note":
+        db.q(f"UPDATE accounts SET note=? WHERE id IN ({ph})", [(value or "").strip() or None, *ids])
+    elif action == "check":
+        busy = [i for i in ids if i in engine.workers]
+        asyncio.create_task(engine.check_accounts([i for i in ids if i not in engine.workers]))
+        return {"n": len(ids) - len(busy), "busy": len(busy)}
+    elif action == "delete":
+        busy = [i for i in ids if i in engine.workers]
+        if busy:
+            raise HTTPException(400, f"{len(busy)} из выбранных аккаунтов сейчас работают — сначала остановите процесс")
+        for i in ids:
+            accounts.delete_account(i)
+        say(f"Удалено аккаунтов: {len(ids)}")
+    else:
+        raise HTTPException(400, "Неизвестное действие")
+    return {"n": len(ids)}
 
 
 @app.post("/api/accounts/check")

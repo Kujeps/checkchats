@@ -180,13 +180,33 @@ MIGRATIONS = [
     ("accounts", "proxy_ok", "INTEGER"),          # 1 работает, 0 нет, NULL не проверяли
     ("accounts", "proxy_info", "TEXT"),           # «socks5, 120 мс» или текст ошибки
     ("accounts", "proxy_checked_at", "REAL"),
-    ("chats", "checked_by", "INTEGER"),
+    ("chats", "checked_by", "INTEGER"),           # аккаунт, проверявший чат (у него чат в кэше)
     ("queries", "kind", "TEXT"),                  # title | messages | both
     ("chats", "country", "TEXT"),                 # код страны или «?»
     ("chats", "city", "TEXT"),
     ("chats", "weekly_active", "INTEGER"),        # разных людей писали за последние 7 дней
-    ("chats", "priority", "INTEGER DEFAULT 0"),   # чем выше, тем раньше проверяется            # аккаунт, проверявший чат (у него чат в кэше)
+    ("chats", "priority", "INTEGER DEFAULT 0"),   # чем выше, тем раньше проверяется
+    # FloodWait действует на тип запроса, а не на весь аккаунт
+    ("accounts", "flood_resolve_until", "REAL DEFAULT 0"),   # поиск чата по username / инвайту
+    ("accounts", "flood_search_until", "REAL DEFAULT 0"),    # поиск новых чатов
+    # менеджер аккаунтов
+    ("accounts", "enabled", "INTEGER DEFAULT 1"),            # участвует ли в работе
+    ("accounts", "tag", "TEXT"),                             # группа, которую задаёт пользователь
+    ("accounts", "note", "TEXT"),
 ]
+
+# Что сделать с уже существующими данными, когда колонка только что появилась
+MIGRATION_FIXUPS = {
+    # Раньше любой FloodWait записывался на весь аккаунт; почти всегда он был на поиске по username
+    ("accounts", "flood_resolve_until"): [
+        "UPDATE accounts SET flood_resolve_until=flood_until, flood_until=0, "
+        "status=CASE WHEN status='flood' THEN 'active' ELSE status END WHERE flood_until > strftime('%s','now')",
+    ],
+    # Раньше «отключить» было статусом аккаунта
+    ("accounts", "enabled"): [
+        "UPDATE accounts SET enabled=0, status='new' WHERE status='disabled'",
+    ],
+}
 
 
 def _migrate(c):
@@ -194,6 +214,8 @@ def _migrate(c):
         cols = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
         if col not in cols:
             c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+            for sql in MIGRATION_FIXUPS.get((table, col), []):
+                c.execute(sql)
 
 
 def add_functions(c):

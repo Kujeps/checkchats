@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CheckChats</title>
-<link rel="stylesheet" href="/static/style.css?v=1.1.0">
+<link rel="stylesheet" href="/static/style.css?v=1.2.0">
 </head>
 <body>
 <header>
@@ -161,16 +161,38 @@
   </div>
   <div class="panel">
     <div class="row">
-      <h3 class="grow">Список аккаунтов</h3>
+      <h3 class="grow">Менеджер аккаунтов <span id="accSummary" class="muted small"></span></h3>
       <button id="btnDirect" class="ghost">Связь с Telegram без прокси</button>
       <button id="btnCheckProxies">Проверить прокси</button>
-      <button id="btnCheckAcc">Проверить аккаунты</button>
     </div>
     <div id="netResult" class="small"></div>
+    <div class="filters">
+      <input id="accSearch" placeholder="Поиск: номер, имя, заметка">
+      <select id="accFilter">
+        <option value="">Все аккаунты</option>
+        <option value="work">В работе</option>
+        <option value="off">Не в работе</option>
+        <option value="ready">Готовы к работе</option>
+        <option value="flood">С FloodWait</option>
+        <option value="problem">Проблемы: мёртв, заморожен, нет связи</option>
+      </select>
+      <select id="accTagFilter"><option value="">Все группы</option></select>
+    </div>
+    <div class="row bulk">
+      <span id="accSelInfo" class="muted">Отметьте аккаунты галочками, чтобы сделать что-то сразу со всеми</span>
+      <button data-bulk="enable">В работу</button>
+      <button data-bulk="disable">Убрать из работы</button>
+      <button data-bulk="tag">Группа…</button>
+      <button data-bulk="note">Заметка…</button>
+      <button data-bulk="check">Проверить подключение</button>
+      <button data-bulk="reset">Сбросить FloodWait и ошибки</button>
+      <button data-bulk="delete" class="ghost danger-text">Удалить</button>
+    </div>
     <div class="table-wrap">
       <table id="accTable">
-        <thead><tr><th>Аккаунт</th><th>Прокси</th><th>Статус</th><th class="num">Username сегодня</th>
-          <th class="num">Поисков сегодня</th><th class="num">Проверено всего</th><th>Последняя ошибка</th><th></th></tr></thead>
+        <thead><tr><th><input type="checkbox" id="accSelAll" title="Выбрать все показанные"></th>
+          <th>Аккаунт</th><th>Группа и заметка</th><th>В работе</th><th>Прокси</th><th>Состояние</th>
+          <th class="num">Username сегодня</th><th class="num">Поисков сегодня</th><th class="num">Проверено</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -303,7 +325,30 @@
 </section>
 </main>
 
+<div id="startModal" class="modal" hidden>
+  <div class="modal-box">
+    <h3>Запуск</h3>
+    <div class="row">
+      <label class="chk"><input type="checkbox" id="smSearch"> Поиск новых чатов</label>
+      <label class="chk"><input type="checkbox" id="smCheck"> Проверка чатов из очереди</label>
+    </div>
+    <div class="row">
+      <b>Какие аккаунты работают</b><span id="smInfo" class="muted"></span><span class="spacer"></span>
+      <button type="button" data-sm="all">Все</button>
+      <button type="button" data-sm="ready">Только готовые</button>
+      <button type="button" data-sm="none">Никого</button>
+      <select id="smTag"><option value="">Выбрать группу…</option></select>
+    </div>
+    <div id="smList" class="modal-list"></div>
+    <div class="row">
+      <span class="muted small grow">Выбор сохранится: в следующий раз эти же аккаунты будут отмечены.</span>
+      <button type="button" id="smCancel">Отмена</button>
+      <button type="button" id="smStart" class="primary">Запустить</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast" hidden></div>
-<script src="/static/app.js?v=1.1.0"></script>
+<script src="/static/app.js?v=1.2.0"></script>
 </body>
 </html>

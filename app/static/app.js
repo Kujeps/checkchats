@@ -55,7 +55,7 @@ $$("nav button").forEach((b) => b.addEventListener("click", () => {
 
 function refreshTab() {
   if (currentTab === "chats") loadChats();
-  if (currentTab === "accounts") loadGlobalProxy(true).then(loadAccounts);
+  if (currentTab === "accounts") { loadGlobalProxy(true).then(loadAccounts); loadAccountTags(); }
   if (currentTab === "search") loadQueries();
   if (currentTab === "settings") loadSettings();
 }
@@ -110,12 +110,7 @@ async function refreshStatus() {
   }
 }
 
-$("#btnStart").addEventListener("click", run(async () => {
-  if (!$("#modeSearch").checked && !$("#modeCheck").checked)
-    return toast("Включите «Поиск», «Проверку» или оба режима — иначе аккаунтам нечего делать");
-  await api("/api/start", { json: {} });
-  refreshStatus();
-}));
+$("#btnStart").addEventListener("click", run(openStartDialog));
 // Режимы можно переключать и на ходу — аккаунты подхватят их в течение нескольких секунд
 for (const [id, key] of [["#modeSearch", "run_search"], ["#modeCheck", "run_check"]])
   $(id).addEventListener("change", run(async (e) => {
@@ -260,48 +255,227 @@ $("#btnGlobalProxy").addEventListener("click", run(async () => {
   loadAccounts();
 }));
 
+// ---------- менеджер аккаунтов ----------
+let accRows = [];
+const accSelected = new Set();
+const hhmm = (ts) => new Date(ts * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+
+// Состояние аккаунта простыми словами: что с ним и может ли он работать
+function accState(a) {
+  const floods = [];
+  if (a.flood_until) floods.push(`FloodWait на всё до ${hhmm(a.flood_until)}`);
+  if (a.flood_resolve_until) floods.push(`FloodWait на поиск по username до ${hhmm(a.flood_resolve_until)} — искать чаты может`);
+  if (a.flood_search_until) floods.push(`FloodWait на поиск чатов до ${hhmm(a.flood_search_until)} — проверять может`);
+  const bad = ["dead", "frozen", "proxy_error"].includes(a.status);
+  const st = a.worker || (a.status === "flood" && !a.flood_until ? "active" : a.status);
+  return {
+    key: st, text: ACC_STATUS[st] || st, floods, bad,
+    ready: !bad && !a.flood_until,
+    lines: [...floods, ...(a.last_error && !a.last_error.startsWith("FloodWait") ? [a.last_error] : [])],
+  };
+}
+
+function accMatches(a) {
+  const q = $("#accSearch").value.trim().toLowerCase();
+  if (q && ![a.name, a.phone, a.me, a.note, a.tag].some((x) => (x || "").toLowerCase().includes(q))) return false;
+  const tag = $("#accTagFilter").value;
+  if (tag && a.tag !== tag) return false;
+  const st = accState(a);
+  switch ($("#accFilter").value) {
+    case "work": return !!a.enabled;
+    case "off": return !a.enabled;
+    case "ready": return st.ready;
+    case "flood": return st.floods.length > 0;
+    case "problem": return st.bad;
+  }
+  return true;
+}
+
+async function loadAccountTags() {
+  const tags = await api("/api/accounts/tags");
+  for (const id of ["#accTagFilter", "#smTag"]) {
+    const sel = $(id), cur = sel.value;
+    sel.innerHTML = `<option value="">${id === "#smTag" ? "Выбрать группу…" : "Все группы"}</option>` +
+      tags.map((x) => `<option>${esc(x)}</option>`).join("");
+    sel.value = cur;
+  }
+}
+
 async function loadAccounts() {
   if (!settings) settings = await api("/api/settings");
-  const rows = await api("/api/accounts");
-  $("#accTable tbody").innerHTML = rows.map((a) => {
-    const st = a.worker || a.status;
-    let extra = "";
-    if (a.status === "flood" && a.flood_until * 1000 > Date.now())
-      extra = " до " + new Date(a.flood_until * 1000).toLocaleTimeString("ru-RU");
-    return `<tr data-id="${a.id}">
-      <td><b>${esc(a.name)}</b><div class="sub">${esc(a.me || "")}</div></td>
+  accRows = await api("/api/accounts");
+  const ids = new Set(accRows.map((a) => a.id));
+  for (const id of [...accSelected]) if (!ids.has(id)) accSelected.delete(id);
+  const shown = accRows.filter(accMatches);
+  const inWork = accRows.filter((a) => a.enabled).length;
+  $("#accSummary").textContent = `— всего ${accRows.length}, в работе ${inWork}, готовы ${accRows.filter((a) => accState(a).ready).length}`;
+  $("#accTable tbody").innerHTML = shown.map((a) => {
+    const st = accState(a);
+    const phone = a.phone && a.phone !== a.name ? `+${esc(a.phone)}` : "";
+    return `<tr data-id="${a.id}" class="${accSelected.has(a.id) ? "sel" : ""}">
+      <td><input type="checkbox" class="acc-sel" ${accSelected.has(a.id) ? "checked" : ""}></td>
+      <td><b>${esc(a.name)}</b> ${phone}<div class="sub">${esc(a.me || "не проверялся")}${a.twofa ? " · 2FA" : ""}</div></td>
+      <td>${a.tag ? `<span class="tagb">${esc(a.tag)}</span>` : ""}
+        <button class="linkish" data-act="tag">${a.tag ? "изменить" : "+ группа"}</button>
+        <div class="sub">${esc(a.note || "")} <button class="linkish" data-act="note">${a.note ? "изменить" : "+ заметка"}</button></div></td>
+      <td><label class="chk"><input type="checkbox" data-act="toggle" ${a.enabled ? "checked" : ""}></label></td>
       <td>${a.uses_global ? globalProxyCell() : a.proxy_label ? esc(a.proxy_label) : '<span class="danger-text">нет</span>'}
-        ${a.uses_global ? "" : '<button class="ghost small" data-act="proxy">изменить</button>'}
+        ${a.uses_global ? "" : '<button class="linkish" data-act="proxy">изменить</button>'}
         ${a.proxy_label ? `<div class="sub ${a.proxy_ok === 1 ? "ok-text" : a.proxy_ok === 0 ? "danger-text" : ""}">${
           a.proxy_ok === 1 ? "✓ " + esc(a.proxy_info) : a.proxy_ok === 0 ? "✗ " + esc(a.proxy_info) : "не проверен"}</div>` : ""}</td>
-      <td class="st-${st}">${ACC_STATUS[st] || st}${extra}</td>
+      <td><span class="st-${st.key}">${esc(st.text)}</span>${st.lines.map((l) => `<div class="sub">${esc(l)}</div>`).join("")}</td>
       <td class="num">${a.resolves_today} / ${settings.resolve_limit}</td>
       <td class="num">${a.searches_today} / ${settings.search_limit}</td>
       <td class="num">${fmt(a.checked_total)}</td>
-      <td class="sub">${esc(a.last_error || "")}</td>
-      <td><button class="ghost small" data-act="${a.status === "disabled" ? "enable" : "disable"}">${a.status === "disabled" ? "включить" : "откл."}</button>
-        ${["dead", "frozen", "proxy_error", "flood"].includes(a.status) ? '<button class="ghost small" data-act="reset">сбросить</button>' : ""}
-        <button class="ghost small danger-text" data-act="delete">удалить</button></td>
     </tr>`;
-  }).join("") || `<tr><td colspan="8" class="muted">Аккаунтов нет</td></tr>`;
+  }).join("") || `<tr><td colspan="9" class="muted">${accRows.length ? "Ничего не подходит под фильтр" : "Аккаунтов нет"}</td></tr>`;
+  $("#accSelAll").checked = shown.length > 0 && shown.every((a) => accSelected.has(a.id));
+  updateBulk();
 }
+
+function updateBulk() {
+  const n = accSelected.size;
+  $("#accSelInfo").textContent = n ? `Выбрано: ${n}` : "Отметьте аккаунты галочками, чтобы сделать что-то сразу со всеми";
+  $$("[data-bulk]").forEach((b) => (b.disabled = !n));
+}
+
+["#accSearch"].forEach((s) => $(s).addEventListener("input", () => run(loadAccounts)()));
+["#accFilter", "#accTagFilter"].forEach((s) => $(s).addEventListener("change", () => run(loadAccounts)()));
+
+$("#accSelAll").addEventListener("change", (e) => {
+  for (const a of accRows.filter(accMatches)) e.target.checked ? accSelected.add(a.id) : accSelected.delete(a.id);
+  run(loadAccounts)();
+});
+
+async function bulk(action, ids, value) {
+  return api("/api/accounts/bulk", { json: { ids, action, value } });
+}
+
+$("#accTable").addEventListener("change", run(async (e) => {
+  const tr = e.target.closest("tr[data-id]");
+  if (!tr) return;
+  const id = +tr.dataset.id;
+  if (e.target.classList.contains("acc-sel")) {
+    e.target.checked ? accSelected.add(id) : accSelected.delete(id);
+    tr.classList.toggle("sel", e.target.checked);
+    updateBulk();
+  } else if (e.target.dataset.act === "toggle") {
+    await bulk(e.target.checked ? "enable" : "disable", [id]);
+    loadAccounts();
+  }
+}));
 
 $("#accTable").addEventListener("click", run(async (e) => {
   const b = e.target.closest("button[data-act]");
   if (!b) return;
-  const id = b.closest("tr").dataset.id;
+  const id = +b.closest("tr").dataset.id;
+  const a = accRows.find((x) => x.id === id);
   const act = b.dataset.act;
   if (act === "proxy") {
     const p = prompt("Прокси для аккаунта (пусто — убрать):", "");
     if (p === null) return;
     await api(`/api/accounts/${id}`, { json: { proxy: p } });
-  } else if (act === "disable") await api(`/api/accounts/${id}`, { json: { status: "disabled" } });
-  else if (act === "enable" || act === "reset") await api(`/api/accounts/${id}`, { json: { status: "new" } });
-  else if (act === "delete") {
-    if (!confirm("Удалить аккаунт и его файл сессии из папки программы?")) return;
-    await api(`/api/accounts/${id}`, { method: "DELETE" });
+  } else if (act === "tag" || act === "note") {
+    const v = prompt(act === "tag" ? "Группа аккаунта (пусто — убрать):" : "Заметка (пусто — убрать):", a[act] || "");
+    if (v === null) return;
+    await bulk(act, [id], v);
+    if (act === "tag") loadAccountTags();
   }
   loadAccounts();
+}));
+
+$$("[data-bulk]").forEach((b) => b.addEventListener("click", run(async () => {
+  const ids = [...accSelected], n = ids.length, act = b.dataset.bulk;
+  let value;
+  if (act === "tag" || act === "note") {
+    value = prompt(act === "tag" ? `Группа для ${n} аккаунтов (пусто — убрать):` : `Заметка для ${n} аккаунтов (пусто — убрать):`, "");
+    if (value === null) return;
+  }
+  if (act === "delete" && !confirm(`Удалить ${n} аккаунтов вместе с файлами сессий из папки программы? Это нельзя отменить.`)) return;
+  if (act === "reset" && !confirm(`Сбросить FloodWait и ошибки у ${n} аккаунтов? Если ограничение Telegram ещё действует, аккаунт просто поймает его снова.`)) return;
+  const r = await bulk(act, ids, value);
+  const done = { enable: "В работу", disable: "Убрано из работы", tag: "Группа задана", note: "Заметка задана",
+                 check: "Проверка подключения запущена", reset: "Сброшено", delete: "Удалено" }[act];
+  toast(`${done}: ${r.n}${r.busy ? ` (${r.busy} сейчас работают — пропущены)` : ""}`);
+  if (act === "delete") accSelected.clear();
+  if (act === "tag") loadAccountTags();
+  loadAccounts();
+  if (act === "check") { setTimeout(() => run(loadAccounts)(), 5000); setTimeout(() => run(loadAccounts)(), 15000); }
+})));
+
+// ---------- окно запуска ----------
+const smChosen = new Set();
+
+function renderStartList() {
+  const search = $("#smSearch").checked, check = $("#smCheck").checked;
+  $("#smList").innerHTML = accRows.map((a) => {
+    const st = accState(a);
+    // Что аккаунт сможет делать прямо сейчас в выбранных режимах
+    let note;
+    if (st.bad) note = st.text;
+    else if (a.flood_until) note = `FloodWait до ${hhmm(a.flood_until)}`;
+    else {
+      const canCheck = check && !a.flood_resolve_until, canSearch = search && !a.flood_search_until;
+      if ((!check || canCheck) && (!search || canSearch)) note = "готов";
+      else if (canSearch) note = `пока только поиск, проверка после ${hhmm(a.flood_resolve_until)}`;
+      else if (canCheck) note = `пока только проверка, поиск после ${hhmm(a.flood_search_until)}`;
+      else note = `сможет после ${hhmm(Math.min(...[check && a.flood_resolve_until, search && a.flood_search_until].filter(Boolean)))}`;
+    }
+    const cls = st.bad || a.flood_until || note.startsWith("сможет") ? "danger-text" : note === "готов" ? "ok-text" : "muted";
+    return `<label><input type="checkbox" data-id="${a.id}" ${smChosen.has(a.id) ? "checked" : ""}>
+      <span class="n">${esc(a.name)}</span>${a.tag ? `<span class="tagb">${esc(a.tag)}</span>` : ""}
+      <span class="muted">${esc(a.note || "")}</span><span class="st ${cls}">${esc(note)}</span></label>`;
+  }).join("") || '<div class="muted" style="padding:10px">Аккаунтов нет — добавьте их на вкладке «Аккаунты».</div>';
+  $("#smInfo").textContent = ` — выбрано ${smChosen.size} из ${accRows.length}`;
+  $("#smStart").textContent = `Запустить${smChosen.size ? ` (${smChosen.size})` : ""}`;
+}
+
+async function openStartDialog() {
+  await Promise.all([loadAccounts(), loadAccountTags()]);
+  smChosen.clear();
+  for (const a of accRows) if (a.enabled && !accState(a).bad) smChosen.add(a.id);
+  $("#smSearch").checked = $("#modeSearch").checked;
+  $("#smCheck").checked = $("#modeCheck").checked;
+  renderStartList();
+  $("#startModal").hidden = false;
+}
+
+$("#smList").addEventListener("change", (e) => {
+  const id = +e.target.dataset.id;
+  e.target.checked ? smChosen.add(id) : smChosen.delete(id);
+  renderStartList();
+});
+["#smSearch", "#smCheck"].forEach((s) => $(s).addEventListener("change", renderStartList));
+$$("[data-sm]").forEach((b) => b.addEventListener("click", () => {
+  smChosen.clear();
+  for (const a of accRows) {
+    if (b.dataset.sm === "all" && !accState(a).bad) smChosen.add(a.id);
+    if (b.dataset.sm === "ready" && accState(a).ready) smChosen.add(a.id);
+  }
+  renderStartList();
+}));
+$("#smTag").addEventListener("change", (e) => {
+  if (!e.target.value) return;
+  smChosen.clear();
+  for (const a of accRows) if (a.tag === e.target.value && !accState(a).bad) smChosen.add(a.id);
+  e.target.value = "";
+  renderStartList();
+});
+$("#smCancel").addEventListener("click", () => ($("#startModal").hidden = true));
+$("#startModal").addEventListener("click", (e) => { if (e.target.id === "startModal") $("#startModal").hidden = true; });
+
+$("#smStart").addEventListener("click", run(async () => {
+  const search = $("#smSearch").checked, check = $("#smCheck").checked;
+  if (!search && !check) return toast("Включите поиск, проверку или оба режима");
+  if (!smChosen.size) return toast("Выберите хотя бы один аккаунт");
+  $("#smStart").disabled = true;
+  try {
+    await bulk("only", [...smChosen]);
+    await api("/api/settings", { json: { run_search: search, run_check: check } });
+    await api("/api/start", { json: {} });
+  } finally { $("#smStart").disabled = false; }
+  $("#startModal").hidden = true;
+  refreshStatus();
 }));
 
 $("#accFiles").addEventListener("change", run(async (e) => {
@@ -357,12 +531,6 @@ $("#btnProxies").addEventListener("click", run(async () => {
   $("#proxyResult").innerHTML = `Назначено: ${r.assigned} из ${r.valid} подходящих. Аккаунтов осталось без прокси: ${r.without_proxy}` +
     (r.bad.length ? `<div class="danger-text">${r.bad.map(esc).join("<br>")}</div>` : "");
   loadAccounts();
-}));
-$("#btnCheckAcc").addEventListener("click", run(async () => {
-  await api("/api/accounts/check", { json: {} });
-  toast("Проверка запущена — статусы обновятся через несколько секунд");
-  setTimeout(() => run(loadAccounts)(), 4000);
-  setTimeout(() => run(loadAccounts)(), 12000);
 }));
 
 // ---------- поиск ----------
@@ -535,7 +703,8 @@ setInterval(() => {
   run(refreshStatus)();
   if (document.hidden) return;
   if (currentTab === "chats" && !$("#chatsTable").matches(":hover")) run(loadChats)();
-  if (currentTab === "accounts") run(loadAccounts)();
+  // пока открыт ввод в менеджере или окно запуска — не перерисовываем таблицу под пальцами
+  if (currentTab === "accounts" && $("#startModal").hidden && document.activeElement !== $("#accSearch")) run(loadAccounts)();
   if (currentTab === "search") run(loadQueries)();
 }, 3000);
 setInterval(() => run(loadCategories)(), 30000);
