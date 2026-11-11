@@ -171,6 +171,52 @@ def finalize(chat_id, ai, s):
             say(f"+{n} новых чатов из ссылок в «{title}»")
 
 
+# ---------- очередь аккаунтов ----------
+
+class Slots:
+    """Сколько аккаунтов работает одновременно. Остальные ждут в честной очереди (кто раньше встал —
+    тот раньше начнёт); лимит читается из настроек на лету, 0 — без ограничения."""
+
+    def __init__(self):
+        self.active = 0
+        self.waiting = deque()
+        self.cond = asyncio.Condition()
+
+    @staticmethod
+    def limit() -> int:
+        try:
+            return max(0, int(db.get_settings().get("max_active_accounts") or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    async def acquire(self, engine) -> bool:
+        ticket = object()
+        async with self.cond:
+            self.waiting.append(ticket)
+            try:
+                while not engine.stopping:
+                    lim = self.limit()
+                    if self.waiting[0] is ticket and (lim == 0 or self.active < lim):
+                        self.waiting.popleft()
+                        self.active += 1
+                        self.cond.notify_all()   # следующий в очереди проверит, есть ли ещё место
+                        return True
+                    try:
+                        await asyncio.wait_for(self.cond.wait(), 5)
+                    except asyncio.TimeoutError:
+                        pass                     # раз в 5 с перечитываем лимит из настроек
+                return False
+            finally:
+                if ticket in self.waiting:
+                    self.waiting.remove(ticket)
+                    self.cond.notify_all()
+
+    async def release(self):
+        async with self.cond:
+            self.active = max(0, self.active - 1)
+            self.cond.notify_all()
+
+
 # ---------- воркер аккаунта ----------
 
 class Worker:
@@ -182,6 +228,7 @@ class Worker:
         self.state = "starting"
         self.current = None
         self.last_search = 0
+        self.need_rest = False   # поймали долгий FloodWait — пора уступить место
 
     # бюджеты на сутки (храним в БД, чтобы переживали перезапуск)
     def _acc(self):
@@ -266,44 +313,74 @@ class Worker:
         return row
 
     async def run(self):
+        """Ждём своей очереди, работаем, отдаём место — и так до остановки или выбывания аккаунта."""
         try:
-            acc = db.one("SELECT * FROM accounts WHERE id=?", (self.acc_id,))
-            if acc["flood_until"] and acc["flood_until"] > time.time():
-                self.state = "flood"
-                await asyncio.sleep(acc["flood_until"] - time.time())
-            self.state = "connecting"
-            if not await self.connect():
-                self.state = db.one("SELECT status FROM accounts WHERE id=?", (self.acc_id,))["status"]
-                say(f"[{self.name}] не подключился: {self.state}", "warn")
-                return
-            say(f"[{self.name}] подключён")
-            checker = Checker(self.client, self)
             while not self.engine.stopping:
-                s = self.engine.s = db.get_settings()
-                if await self._maybe_search(checker, s):
-                    await self._pause(s)
+                acc = db.one("SELECT * FROM accounts WHERE id=?", (self.acc_id,))
+                if acc is None or acc["status"] in ("dead", "frozen", "disabled"):
+                    return
+                # Отдыхаем без места в очереди, чтобы его занял другой аккаунт
+                if acc["flood_until"] and acc["flood_until"] > time.time():
+                    self.state = "flood"
+                    await self._sleep(acc["flood_until"] - time.time() + 1)
+                    if acc["status"] == "flood":
+                        self._set("active")
                     continue
                 if not self.can_resolve():
                     self.state = "limit"
                     self._set("active", "дневной лимит исчерпан")
                     await self._sleep(min(_seconds_to_midnight(), 600))
                     continue
-                chat = self._claim()
-                if not chat:
-                    self.state = "idle"
-                    await self._sleep(5)
-                    continue
-                self.state = "working"
-                self.current = chat["link"]
-                ok = await self._check(checker, chat, s)
-                self.current = None
-                if ok is False:
+                self.state = "queue"
+                if not await self.engine.slots.acquire(self.engine):
                     return
-                await self._pause(s)
+                try:
+                    result = await self._session()
+                finally:
+                    await self.disconnect()
+                    await self.engine.slots.release()
+                if result == "gone":
+                    return
         finally:
             await self.disconnect()
             if self.state not in ("dead", "frozen", "proxy_error"):
                 self.state = "stopped"
+
+    async def _session(self) -> str:
+        """Одна смена аккаунта. Возвращает: stop | limit | rest | gone."""
+        self.state = "connecting"
+        if not await self.connect():
+            self.state = db.one("SELECT status FROM accounts WHERE id=?", (self.acc_id,))["status"]
+            say(f"[{self.name}] не подключился: {self.state}", "warn")
+            return "gone"
+        say(f"[{self.name}] подключён")
+        checker = Checker(self.client, self)
+        self.need_rest = False
+        while not self.engine.stopping:
+            s = self.engine.s = db.get_settings()
+            if await self._maybe_search(checker, s):
+                if self.need_rest:
+                    return "rest"
+                await self._pause(s)
+                continue
+            if not self.can_resolve():
+                say(f"[{self.name}] дневной лимит исчерпан — уступает место", "info")
+                return "limit"
+            chat = self._claim()
+            if not chat:
+                self.state = "idle"
+                await self._sleep(5)
+                continue
+            self.state = "working"
+            self.current = chat["link"]
+            ok = await self._check(checker, chat, s)
+            self.current = None
+            if ok is False:
+                return "gone"
+            if self.need_rest:
+                return "rest"
+            await self._pause(s)
+        return "stop"
 
     async def _sleep(self, sec):
         end = time.time() + sec
@@ -317,11 +394,11 @@ class Worker:
         if seconds <= s["max_flood_sleep"]:
             await self._sleep(seconds + 1)
             return
+        # Долгий FloodWait: отдаём место в очереди и отдыхаем без него
         self.state = "flood"
         self._set("flood", f"FloodWait {seconds} c", flood_until=time.time() + seconds)
-        say(f"[{self.name}] FloodWait {seconds} c — отдыхает", "warn")
-        await self._sleep(seconds + 2)
-        self._set("active")
+        say(f"[{self.name}] FloodWait {seconds} c — уступает место и отдыхает", "warn")
+        self.need_rest = True
 
     async def _check(self, checker, chat, s):
         """True — продолжаем, False — аккаунт больше не работает."""
@@ -414,6 +491,7 @@ class Engine:
         self.llm_pause_until = 0.0   # общая пауза всех потоков ИИ после 429
         self.llm_backoff = 0
         self.checking_accounts = False
+        self.slots = Slots()
 
     async def start(self):
         if self.running:
@@ -422,6 +500,7 @@ class Engine:
         self.stopping = False
         self.running = True
         self.http = httpx.AsyncClient()
+        self.slots = Slots()
         db.reset_stale()
         # Чаты, упавшие на перегрузке провайдера в старых версиях, — снова в очередь ИИ
         n = db.q("UPDATE chats SET llm_status='pending', llm_error=NULL WHERE llm_status='error' "
@@ -589,6 +668,7 @@ class Engine:
             "accounts": {r["status"]: r["n"] for r in accs},
             "workers": [{"id": w.acc_id, "name": w.name, "state": w.state, "current": w.current}
                         for w in self.workers.values()],
+            "slots": {"active": self.slots.active, "limit": Slots.limit(), "waiting": len(self.slots.waiting)},
             "queries": {k: v or 0 for k, v in q.items()},
             "llm": {**self.llm_stats, "spent": db.get_settings().get("llm_spent", 0),
                     "pause": max(0, round(self.llm_pause_until - time.time()))},

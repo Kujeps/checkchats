@@ -81,7 +81,7 @@ td .sub { color: var(--muted); font-size: 12px; max-width: 420px; }
 .worker .cur { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log { font: 12px/1.5 ui-monospace, Consolas, monospace; max-height: 420px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 .log .warn { color: var(--low); } .log .error { color: var(--danger); }
-.st-active, .st-working { color: var(--live); } .st-flood, .st-limit { color: var(--low); }
+.st-active, .st-working { color: var(--live); } .st-flood, .st-limit { color: var(--low); } .st-queue { color: var(--muted); }
 .st-dead, .st-frozen, .st-proxy_error { color: var(--danger); } .st-new, .st-disabled, .st-idle { color: var(--muted); }
 details.sub-block { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
 details.sub-block summary { cursor: pointer; color: var(--muted); }

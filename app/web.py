@@ -83,7 +83,7 @@ async def set_settings(request: Request):
         data.pop("openrouter_key", None)
     data.pop("llm_spent", None)
     ints = {"llm_concurrency", "llm_messages", "llm_msg_chars", "messages_limit", "resolve_limit", "search_limit",
-            "max_flood_sleep", "snowball_depth", "join_limit", "live_threshold", "spam_threshold", "dead_days"}
+            "max_flood_sleep", "max_active_accounts", "snowball_depth", "join_limit", "live_threshold", "spam_threshold", "dead_days"}
     for k in list(data):
         if k in ints:
             data[k] = int(data[k])

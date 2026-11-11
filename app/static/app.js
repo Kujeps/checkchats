@@ -8,7 +8,7 @@ const STATUS = { pending: "в очереди", checking: "проверяется
   not_chat: "не чат", private: "нет доступа", error: "ошибка", duplicate: "дубль" };
 const ACC_STATUS = { new: "новый", active: "активен", flood: "FloodWait", dead: "мёртв", frozen: "заморожен",
   proxy_error: "нет связи", disabled: "отключён", working: "работает", idle: "ждёт задач", limit: "лимит на сегодня",
-  connecting: "подключение", search: "ищет чаты", starting: "старт", stopped: "остановлен" };
+  connecting: "подключение", queue: "в очереди", search: "ищет чаты", starting: "старт", stopped: "остановлен" };
 
 let settings = null;
 let page = 1;
@@ -82,8 +82,14 @@ async function refreshStatus() {
   $("#statCards").innerHTML = cards.map(([l, v, cls]) =>
     `<div class="card ${cls || ""}"><div class="v">${typeof v === "string" ? esc(v) : fmt(v || 0)}</div><div class="l">${l}</div></div>`).join("");
 
-  $("#workers").innerHTML = s.workers.length
-    ? s.workers.map((w) => `<div class="worker"><span class="n">${esc(w.name)}</span>
+  const sl = s.slots || {};
+  $("#slotsInfo").textContent = s.running
+    ? `— работают ${sl.active}${sl.limit ? " из " + sl.limit : ""}, в очереди ${sl.waiting}` : "";
+  // Сначала те, кто занят делом, потом ждущие и отдыхающие
+  const order = { working: 0, search: 0, idle: 1, connecting: 1, queue: 2, flood: 3, limit: 3 };
+  const workers = [...s.workers].sort((a, b) => (order[a.state] ?? 4) - (order[b.state] ?? 4));
+  $("#workers").innerHTML = workers.length
+    ? workers.map((w) => `<div class="worker"><span class="n">${esc(w.name)}</span>
         <span class="st-${w.state}">${ACC_STATUS[w.state] || w.state}</span>
         <span class="cur">${esc(w.current || "")}</span></div>`).join("")
     : `<div class="muted">Процесс не запущен. Добавьте аккаунты и чаты, затем нажмите «Запустить».</div>`;
