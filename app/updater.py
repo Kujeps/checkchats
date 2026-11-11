@@ -22,7 +22,7 @@ def why_not_updatable() -> str | None:
     return None
 
 
-async def _run(*args, timeout=120) -> str:
+async def _run(*args, timeout=120, check=True) -> str:
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0", LC_ALL="C")   # не ждать ввода пароля в консоли
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -36,9 +36,9 @@ async def _run(*args, timeout=120) -> str:
         proc.kill()
         raise UpdateError(f"{' '.join(args[:2])}: не ответил за {timeout} с")
     text = out.decode("utf-8", "replace").strip()
-    if proc.returncode != 0:
+    if check and proc.returncode != 0:
         raise UpdateError(f"{' '.join(args[:2])}: {text[-500:]}")
-    return text
+    return text if check else (proc.returncode, text)
 
 
 def _git(*args, **kw):
@@ -74,16 +74,37 @@ async def check() -> dict:
 
 
 async def pull() -> dict:
-    """git pull и, если поменялись зависимости, их установка. Возвращает список изменений."""
+    """Переключает папку на свежую версию из GitHub и ставит зависимости, если они поменялись.
+
+    Обычный git pull здесь не годится: на Windows git иногда считает файлы «изменёнными» только
+    из-за переводов строк, и pull отказывается работать. Поэтому: скачиваем, проверяем, что настоящих
+    правок и своих коммитов в папке нет, и переключаемся на версию из GitHub. Папки data и .venv
+    git не трогает — они в .gitignore.
+    """
     reason = why_not_updatable()
     if reason:
         raise UpdateError(reason)
+    await _git("fetch", "--quiet", timeout=60)
     before = await _git("rev-parse", "HEAD")
-    req_before = _requirements_hash()
-    await _git("pull", "--ff-only", timeout=120)
-    after = await _git("rev-parse", "HEAD")
-    if after == before:
+    if int(await _git("rev-list", "--count", "@{u}..HEAD") or 0):
+        raise UpdateError("в папке программы есть свои коммиты — обновите вручную через git pull")
+    if not int(await _git("rev-list", "--count", "HEAD..@{u}") or 0):
         return {"updated": False, "changes": []}
+
+    dirty = set((await _git("diff", "--name-only")).splitlines()) | \
+        set((await _git("diff", "--cached", "--name-only")).splitlines())
+    real = []
+    for f in sorted(x for x in dirty if x.strip()):
+        code, _ = await _git("diff", "HEAD", "--ignore-cr-at-eol", "--quiet", "--", f, check=False)
+        if code != 0:
+            real.append(f)
+    if real:
+        raise UpdateError("изменены файлы программы: " + ", ".join(real[:10])
+                          + " — сохраните свои правки отдельно и обновите вручную")
+
+    req_before = _requirements_hash()
+    await _git("reset", "--hard", "--quiet", "@{u}")
+    after = await _git("rev-parse", "HEAD")
     changes = [ln for ln in (await _git("log", "--format=%h %s", f"{before}..{after}")).splitlines() if ln.strip()]
     deps = _requirements_hash() != req_before
     if deps:
