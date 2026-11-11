@@ -1,0 +1,160 @@
+"""Анализ чата через OpenRouter."""
+import json
+import re
+
+import httpx
+
+API = "https://openrouter.ai/api/v1"
+
+SYSTEM = """Ты аналитик Telegram-сообществ. По описанию чата и выборке последних сообщений определи:
+- о чём чат и кто в нём сидит;
+- общаются ли там живые люди, или это боты, спам-рассылки, объявления «работа на свежем воздухе», \
+накрутка, мёртвый чат;
+- относится ли аудитория к целевой.
+
+Признаки живого общения: разные люди отвечают друг другу по теме, задают вопросы, спорят, \
+обсуждают конкретику; сообщения разные по стилю и длине.
+Признаки ботов и спама: одинаковые или шаблонные тексты, предложения лёгкого заработка, \
+«пиши в ЛС», ссылки на сомнительные ресурсы, нет ответов друг другу, только реклама.
+Для канала (там пишут только админы) оценивай живость по тому, есть ли реальный авторский контент \
+и реакция аудитории (комментарии, если они даны).
+
+Отвечай ТОЛЬКО JSON-объектом без пояснений:
+{"category": "<одна из категорий списка>",
+ "topic": "<тематика в 3-8 словах>",
+ "audience": "<кто участники, 3-10 слов>",
+ "live_score": <0-100, насколько это живое общение реальных людей>,
+ "spam_score": <0-100, доля ботов, спама и мусорной рекламы>,
+ "language": "<код языка, например ru>",
+ "summary": "<1-2 предложения о чате>"}"""
+
+
+def build_prompt(chat: dict, sample: dict, categories: list, target: str, msg_chars: int, msg_limit: int) -> str:
+    lines = [
+        f"Категории: {'; '.join(categories)}",
+        f"Целевая аудитория заказчика: {target}",
+        "",
+        f"Тип: {'канал' if chat.get('type') == 'channel' else 'группа (чат)'}",
+        f"Название: {chat.get('title') or ''}",
+        f"Описание: {(chat.get('about') or '')[:800]}",
+        f"Участников: {chat.get('members') or 'неизвестно'}",
+    ]
+    m = sample.get("metrics") or {}
+    if m:
+        lines.append(f"Сообщений в день: {m.get('msgs_per_day')}, разных авторов в выборке: "
+                     f"{m.get('unique_authors', '-')}, повторов текста: {m.get('dup_ratio')}")
+    if sample.get("invite_only"):
+        lines.append("Сообщения недоступны (закрытый чат), оценивай по названию и описанию.")
+
+    def fmt(msgs):
+        out = []
+        for x in msgs[:msg_limit]:
+            t = re.sub(r"\s+", " ", x.get("text") or "").strip()
+            if not t:
+                continue
+            who = f"u{x['s']}" if x.get("s") is not None else "?"
+            if x.get("r"):
+                who += f" (ответ на u{x['r']})" if x.get("r") != "?" else " (ответ)"
+            out.append(f"[{who}] {t[:msg_chars]}")
+        return out
+
+    msgs = fmt(sample.get("messages") or [])
+    if msgs:
+        lines += ["", "Последние сообщения (u<номер> — автор):", *msgs]
+    linked = fmt(sample.get("linked") or [])
+    if linked:
+        lines += ["", "Комментарии в привязанной группе обсуждения:", *linked[: max(10, msg_limit // 2)]]
+    return "\n".join(lines)
+
+
+def _parse_json(text: str) -> dict:
+    text = (text or "").strip()
+    text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.M).strip()
+    try:
+        return json.loads(text)
+    except ValueError:
+        m = re.search(r"\{.*\}", text, re.S)
+        if not m:
+            raise ValueError("ИИ вернул не JSON")
+        return json.loads(m.group(0))
+
+
+async def chat_json(client: httpx.AsyncClient, key: str, model: str, system: str, user: str,
+                    max_tokens=600) -> tuple[dict, dict]:
+    body = {
+        "model": model,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+        "usage": {"include": True},   # OpenRouter вернёт стоимость запроса
+    }
+    headers = {"Authorization": f"Bearer {key}", "X-Title": "CheckChats"}
+    r = await client.post(f"{API}/chat/completions", json=body, headers=headers, timeout=90)
+    if r.status_code >= 400:
+        raise RuntimeError(f"OpenRouter {r.status_code}: {r.text[:300]}")
+    data = r.json()
+    if "error" in data:
+        raise RuntimeError(f"OpenRouter: {data['error']}")
+    content = data["choices"][0]["message"].get("content") or ""
+    return _parse_json(content), data.get("usage") or {}
+
+
+async def analyze(client, key, model, chat, sample, categories, target, msg_chars, msg_limit) -> tuple[dict, dict]:
+    prompt = build_prompt(chat, sample, categories, target, msg_chars, msg_limit)
+    res, usage = await chat_json(client, key, model, SYSTEM, prompt)
+    cat = str(res.get("category") or "Другое").strip()
+    # модель иногда пишет категорию чуть иначе — приводим к ближайшей из списка
+    if cat not in categories:
+        low = cat.lower()
+        cat = next((c for c in categories if low[:6] and (low[:6] in c.lower() or c.lower()[:6] in low)), "Другое")
+
+    def score(v):
+        try:
+            return max(0, min(100, int(float(v))))
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "category": cat,
+        "topic": str(res.get("topic") or "")[:200],
+        "audience": str(res.get("audience") or "")[:200],
+        "live": score(res.get("live_score")),
+        "spam": score(res.get("spam_score")),
+        "language": str(res.get("language") or "")[:10],
+        "summary": str(res.get("summary") or "")[:600],
+    }, usage
+
+
+async def generate_queries(client, key, model, topics: str, cities: str, n: int = 60) -> list:
+    system = ("Ты помогаешь находить публичные Telegram-чаты через встроенный поиск Telegram. "
+              "Поиск ищет по названию и username чата, поэтому запросы должны быть короткими "
+              "(1-3 слова), как люди называют такие чаты. Ответ — JSON {\"queries\": [..]}.")
+    user = (f"Нужны чаты, где общается такая аудитория: {topics}\n"
+            f"Города/регионы (если пусто — без привязки): {cities or '-'}\n"
+            f"Придумай {n} разных поисковых запросов на русском и английском, включая сленг "
+            "(вб, озон, селлеры, риелторы, мастера и т.п.) и сочетания с городами.")
+    res, _ = await chat_json(client, key, model, system, user, max_tokens=2000)
+    out = []
+    for x in res.get("queries") or []:
+        x = str(x).strip()
+        if x and x.lower() not in {o.lower() for o in out}:
+            out.append(x[:64])
+    return out
+
+
+async def list_models(client) -> list:
+    r = await client.get(f"{API}/models", timeout=30)
+    r.raise_for_status()
+    out = []
+    for m in r.json().get("data", []):
+        p = m.get("pricing") or {}
+        try:
+            pin = float(p.get("prompt") or 0) * 1e6
+            pout = float(p.get("completion") or 0) * 1e6
+        except ValueError:
+            continue
+        out.append({"id": m["id"], "name": m.get("name") or m["id"],
+                    "in": round(pin, 3), "out": round(pout, 3), "ctx": m.get("context_length")})
+    out.sort(key=lambda x: (x["in"] + x["out"], x["id"]))
+    return out

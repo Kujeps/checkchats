@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CheckChats</title>
+<link rel="stylesheet" href="/static/style.css?v=1.0.1">
+</head>
+<body>
+<header>
+  <div class="brand">CheckChats <span class="muted">проверка Telegram-чатов</span></div>
+  <nav>
+    <button data-tab="dash" class="active">Обзор</button>
+    <button data-tab="chats">Чаты</button>
+    <button data-tab="accounts">Аккаунты</button>
+    <button data-tab="search">Поиск чатов</button>
+    <button data-tab="settings">Настройки</button>
+  </nav>
+  <div class="run">
+    <span id="runState" class="pill">остановлено</span>
+    <button id="btnStart" class="primary">▶ Запустить</button>
+    <button id="btnStop" class="danger" hidden>■ Остановить</button>
+  </div>
+</header>
+
+<main>
+<!-- ОБЗОР -->
+<section id="tab-dash" class="tab active">
+  <div class="cards" id="statCards"></div>
+  <div class="grid2">
+    <div class="panel">
+      <h3>Аккаунты в работе</h3>
+      <div id="workers" class="workers"></div>
+    </div>
+    <div class="panel">
+      <h3>Журнал</h3>
+      <div id="log" class="log"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ЧАТЫ -->
+<section id="tab-chats" class="tab">
+  <div class="panel">
+    <h3>Добавить чаты</h3>
+    <div class="row">
+      <textarea id="chatsText" rows="4" placeholder="Ссылки или @username — по одному на строку, через пробел или запятую. Подходят t.me/name, @name, t.me/+инвайт, t.me/joinchat/..."></textarea>
+    </div>
+    <div class="row">
+      <button id="btnImportText" class="primary">Добавить из текста</button>
+      <label class="file">Загрузить файл (.txt, .csv, .xlsx)<input type="file" id="chatsFile" accept=".txt,.csv,.xlsx" multiple></label>
+      <span id="importResult" class="muted"></span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="filters">
+      <input id="fSearch" placeholder="Поиск по названию, описанию">
+      <select id="fVerdict">
+        <option value="">Все вердикты</option>
+        <option value="live">Живые</option>
+        <option value="live,low">Живые и слабые</option>
+        <option value="low">Слабые</option>
+        <option value="dead">Мёртвые</option>
+        <option value="spam">Спам/боты</option>
+        <option value="private">Закрытые</option>
+      </select>
+      <select id="fCategory"><option value="">Все категории</option></select>
+      <select id="fType"><option value="">Каналы и группы</option><option value="group">Группы</option><option value="channel">Каналы</option></select>
+      <select id="fStatus">
+        <option value="">Любой статус</option>
+        <option value="pending">В очереди</option>
+        <option value="checked">Проверен</option>
+        <option value="not_found">Не найден</option>
+        <option value="private">Нет доступа</option>
+        <option value="error">Ошибка</option>
+        <option value="duplicate">Дубль</option>
+      </select>
+      <label class="chk"><input type="checkbox" id="fTarget"> только целевые</label>
+      <input id="fMinMembers" type="number" min="0" placeholder="Участников от" class="short">
+      <select id="fSort">
+        <option value="live">По живости</option>
+        <option value="members">По участникам</option>
+        <option value="activity">По активности</option>
+        <option value="recent">Недавно проверенные</option>
+        <option value="added">Недавно добавленные</option>
+      </select>
+      <button id="btnExport" class="primary">⬇ Excel по фильтру</button>
+    </div>
+    <div class="row muted small" id="chatsInfo"></div>
+    <div class="table-wrap">
+      <table id="chatsTable">
+        <thead><tr>
+          <th>Чат</th><th>Тип</th><th class="num">Участн.</th><th class="num">Сообщ./день</th>
+          <th class="num">Авторов</th><th class="num">Живость</th><th class="num">Спам</th><th>Вердикт</th>
+          <th>Категория / тематика</th><th>Статус</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="pager">
+      <button id="prevPage">←</button><span id="pageInfo"></span><button id="nextPage">→</button>
+      <span class="spacer"></span>
+      <button data-retry="errors">Повторить ошибки</button>
+      <button data-retry="llm">Повторить ошибки ИИ</button>
+      <button data-clear="pending" class="ghost">Очистить очередь</button>
+      <button data-clear="all" class="ghost danger-text">Удалить все чаты</button>
+    </div>
+  </div>
+</section>
+
+<!-- АККАУНТЫ -->
+<section id="tab-accounts" class="tab">
+  <div class="grid2">
+    <div class="panel">
+      <h3>Добавить аккаунты</h3>
+      <p class="muted small">Пары <code>12345.session</code> + <code>12345.json</code> или .zip с ними. Сессии копируются в папку <code>data/accounts</code>.</p>
+      <label class="file big">Выбрать файлы или архив<input type="file" id="accFiles" multiple accept=".session,.json,.zip"></label>
+      <div id="accImportResult" class="small"></div>
+    </div>
+    <div class="panel">
+      <h3>Прокси</h3>
+      <p class="muted small">По одному на строку. Каждому аккаунту — свой прокси навсегда. Форматы: <code>socks5://user:pass@host:port</code>, <code>http://host:port</code>, <code>host:port:user:pass</code>.</p>
+      <textarea id="proxyText" rows="4"></textarea>
+      <div class="row">
+        <button id="btnProxies" class="primary">Раздать аккаунтам без прокси</button>
+        <label class="chk"><input type="checkbox" id="proxyOverwrite"> переназначить всем</label>
+      </div>
+      <div id="proxyResult" class="small"></div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="row">
+      <h3 class="grow">Список аккаунтов</h3>
+      <button id="btnCheckAcc">Проверить все</button>
+    </div>
+    <div class="table-wrap">
+      <table id="accTable">
+        <thead><tr><th>Аккаунт</th><th>Прокси</th><th>Статус</th><th class="num">Username сегодня</th>
+          <th class="num">Поисков сегодня</th><th class="num">Проверено всего</th><th>Последняя ошибка</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ПОИСК -->
+<section id="tab-search" class="tab">
+  <div class="grid2">
+    <div class="panel">
+      <h3>Поисковые запросы</h3>
+      <p class="muted small">Аккаунты ищут публичные чаты по этим словам через поиск Telegram (каждый запрос даёт до ~10–20 чатов). Найденное попадает в очередь проверки.</p>
+      <textarea id="queriesText" rows="8" placeholder="селлеры wb&#10;озон продавцы&#10;риелторы москва"></textarea>
+      <div class="row"><button id="btnAddQueries" class="primary">Добавить запросы</button><span id="qResult" class="muted"></span></div>
+    </div>
+    <div class="panel">
+      <h3>Сгенерировать запросы через ИИ</h3>
+      <label>Кого ищем<textarea id="genTopics" rows="3"></textarea></label>
+      <label>Города / регионы (необязательно)<input id="genCities" placeholder="Москва, Казань, Екатеринбург"></label>
+      <div class="row"><label class="inline">Сколько <input id="genN" type="number" value="60" class="short"></label>
+        <button id="btnGen">Сгенерировать</button><span id="genResult" class="muted"></span></div>
+      <p class="muted small">Ещё один источник — «снежный ком»: ссылки и репосты из подходящих чатов автоматически добавляются в очередь (настраивается в «Настройках»).</p>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="row"><h3 class="grow">Очередь запросов</h3>
+      <button data-qclear="errors">Повторить ошибки</button>
+      <button data-qclear="all" class="ghost danger-text">Очистить</button></div>
+    <div class="table-wrap"><table id="qTable"><thead><tr><th>Запрос</th><th>Статус</th><th class="num">Новых чатов</th><th>Ошибка</th></tr></thead><tbody></tbody></table></div>
+  </div>
+</section>
+
+<!-- НАСТРОЙКИ -->
+<section id="tab-settings" class="tab">
+  <form id="settingsForm">
+  <div class="grid2">
+    <div class="panel">
+      <h3>Нейросеть (OpenRouter)</h3>
+      <label>API-ключ <input type="password" name="openrouter_key" autocomplete="off" placeholder="sk-or-…"></label>
+      <div class="muted small" id="keyState"></div>
+      <label>Модель
+        <div class="row"><input name="model" list="modelList" class="grow"><button type="button" id="btnModels">Загрузить список</button></div>
+        <datalist id="modelList"></datalist>
+      </label>
+      <div class="muted small" id="modelInfo"></div>
+      <label class="chk"><input type="checkbox" name="llm_enabled"> Анализировать чаты нейросетью</label>
+      <div class="cols3">
+        <label>Параллельных запросов<input type="number" name="llm_concurrency" min="1" max="50"></label>
+        <label>Сообщений в ИИ<input type="number" name="llm_messages" min="5" max="200"></label>
+        <label>Символов на сообщение<input type="number" name="llm_msg_chars" min="50" max="2000"></label>
+      </div>
+      <div class="row"><button type="button" id="btnTestLlm">Проверить на примере</button><span class="muted small" id="spent"></span></div>
+      <pre id="llmTestResult" class="small" hidden></pre>
+    </div>
+
+    <div class="panel">
+      <h3>Кого ищем</h3>
+      <label>Описание целевой аудитории (для ИИ)<textarea name="target_description" rows="3"></textarea></label>
+      <label>Категории (по одной на строку)<textarea name="categories" rows="8"></textarea></label>
+      <div>Целевые категории:</div>
+      <div id="targetCats" class="checks"></div>
+    </div>
+
+    <div class="panel">
+      <h3>Telegram и лимиты</h3>
+      <div class="cols3">
+        <label>Читать сообщений<input type="number" name="messages_limit" min="20" max="500"></label>
+        <label>Пауза от, сек<input type="number" name="delay_min" min="0" step="0.5"></label>
+        <label>Пауза до, сек<input type="number" name="delay_max" min="0" step="0.5"></label>
+        <label>Поисков username в сутки на аккаунт<input type="number" name="resolve_limit" min="1"></label>
+        <label>Поисковых запросов в сутки на аккаунт<input type="number" name="search_limit" min="0"></label>
+        <label>FloodWait до N сек — просто ждать<input type="number" name="max_flood_sleep" min="0"></label>
+      </div>
+      <label class="chk"><input type="checkbox" name="allow_no_proxy"> Разрешить аккаунты без прокси (пойдут с IP этого компьютера)</label>
+      <h4>Закрытые чаты (инвайт-ссылки)</h4>
+      <p class="muted small">Без вступления видно только название, описание и число участников. Вступление — самое рискованное действие для аккаунта.</p>
+      <label class="chk"><input type="checkbox" name="join_private"> Вступать, чтобы прочитать сообщения</label>
+      <div class="cols3">
+        <label>Вступлений в сутки на аккаунт<input type="number" name="join_limit" min="0"></label>
+        <label class="chk"><input type="checkbox" name="leave_after_join"> Выходить после проверки</label>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Оценка и «снежный ком»</h3>
+      <div class="cols3">
+        <label>Порог «живой», 0–100<input type="number" name="live_threshold" min="0" max="100"></label>
+        <label>Порог «спам», 0–100<input type="number" name="spam_threshold" min="0" max="100"></label>
+        <label>«Мёртвый», если тишина дольше, дней<input type="number" name="dead_days" min="1"></label>
+      </div>
+      <label class="chk"><input type="checkbox" name="snowball"> Добавлять чаты из ссылок и репостов</label>
+      <div class="cols3">
+        <label>Глубина<input type="number" name="snowball_depth" min="0" max="10"></label>
+        <label class="chk"><input type="checkbox" name="snowball_only_target"> Только из целевых живых чатов</label>
+      </div>
+      <label class="chk"><input type="checkbox" name="keep_sample"> Хранить выборку сообщений после анализа (база будет больше)</label>
+    </div>
+  </div>
+  <div class="row sticky"><button type="submit" class="primary">Сохранить настройки</button><span id="saveResult" class="muted"></span></div>
+  </form>
+</section>
+</main>
+
+<div id="toast" hidden></div>
+<script src="/static/app.js?v=1.0.1"></script>
+</body>
+</html>

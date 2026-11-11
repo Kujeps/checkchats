@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+data/
+build/
+dist/
+*.spec
+*.session
+*.session-journal
+.claude/
+.DS_Store
