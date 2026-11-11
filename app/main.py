@@ -7,16 +7,18 @@ import webbrowser
 
 import uvicorn
 
-from . import db, geo
+from . import db, geo, updater
 from .engine import engine
 from .paths import DATA_DIR
 
 HOST = "127.0.0.1"
+RESTART_PORT = None   # перезапуск после обновления: порт прошлой копии
 
 
 def _free_port(start=8765):
     if "--port" in sys.argv:
         return int(sys.argv[sys.argv.index("--port") + 1])
+    start = RESTART_PORT or start
     for port in range(start, start + 50):
         with socket.socket() as s:
             if sys.platform != "win32":   # на Windows SO_REUSEADDR разрешает двойной bind
@@ -31,19 +33,25 @@ def _free_port(start=8765):
 
 async def _serve():
     from .web import app
+    global RESTART_PORT
+    RESTART_PORT = updater.consume_restart_flag()
     db.conn()
     db.reset_stale()
     geo.backfill(db)
     port = _free_port()
     config = uvicorn.Config(app, host=HOST, port=port, log_level="warning")
     server = uvicorn.Server(config)
+    app.state.server = server
+    app.state.port = port
+    app.state.restart = False
     url = f"http://{HOST}:{port}"
 
     async def open_browser():
         while not server.started:
             await asyncio.sleep(0.1)
         print(f"\n  CheckChats запущен: {url}\n  Данные: {DATA_DIR}\n  Чтобы выйти — закройте это окно.\n")
-        if "--no-browser" not in sys.argv:
+        # после обновления страница уже открыта и сама переподключится
+        if "--no-browser" not in sys.argv and not RESTART_PORT:
             webbrowser.open(url)
 
     asyncio.create_task(open_browser())
@@ -51,6 +59,7 @@ async def _serve():
         await server.serve()
     finally:
         await engine.stop()
+    return app.state.restart, port
 
 
 def main():
@@ -59,9 +68,12 @@ def main():
                                   logging.StreamHandler()])
     logging.getLogger("telethon").setLevel(logging.WARNING)
     try:
-        asyncio.run(_serve())
+        restart, port = asyncio.run(_serve())
     except KeyboardInterrupt:
-        pass
+        return
+    if restart:
+        print("\n  Программа обновлена — перезапуск…\n")
+        updater.restart(port)
 
 
 if __name__ == "__main__":

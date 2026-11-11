@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CheckChats</title>
-<link rel="stylesheet" href="/static/style.css?v=1.0.9">
+<link rel="stylesheet" href="/static/style.css?v=1.1.0">
 </head>
 <body>
 <header>
@@ -91,6 +91,7 @@
       <input id="fMinMembers" type="number" min="0" placeholder="Участников от" class="short">
       <select id="fSort">
         <option value="live">По живости</option>
+        <option value="active">По активным людям</option>
         <option value="members">По участникам</option>
         <option value="activity">По активности</option>
         <option value="recent">Недавно проверенные</option>
@@ -104,7 +105,7 @@
       <table id="chatsTable">
         <thead><tr>
           <th>Чат</th><th>Тип</th><th>Гео</th><th class="num">Участн.</th><th class="num">Сообщ./день</th>
-          <th class="num">Людей</th><th class="num">Живость</th><th class="num">Спам</th><th>Вердикт</th>
+          <th class="num" title="Разных людей, писавших за последние 7 дней">Людей за 7 дн.</th><th class="num">Живость</th><th class="num">Спам</th><th>Вердикт</th>
           <th>Категория / тематика</th><th>Статус</th>
         </tr></thead>
         <tbody></tbody>
@@ -211,6 +212,14 @@
 
 <!-- НАСТРОЙКИ -->
 <section id="tab-settings" class="tab">
+  <div class="panel">
+    <div class="row">
+      <h3 class="grow">Программа <span id="versionInfo" class="muted small"></span></h3>
+      <button type="button" id="btnCheckUpdate">Проверить обновления</button>
+      <button type="button" id="btnUpdate" class="primary" hidden>Обновить и перезапустить</button>
+    </div>
+    <div id="updateInfo" class="small"></div>
+  </div>
   <form id="settingsForm">
   <div class="grid2">
     <div class="panel">
@@ -251,7 +260,9 @@
     <div class="panel">
       <h3>Telegram и лимиты</h3>
       <div class="cols3">
-        <label>Читать сообщений<input type="number" name="messages_limit" min="20" max="500"></label>
+        <label>Читать минимум сообщений<input type="number" name="messages_limit" min="20" max="500"></label>
+        <label>…и так, чтобы покрыть дней<input type="number" name="history_days" min="1" max="60"></label>
+        <label>…но не больше сообщений<input type="number" name="history_max" min="100" max="5000" step="100"></label>
         <label>Пауза от, сек<input type="number" name="delay_min" min="0" step="0.5"></label>
         <label>Пауза до, сек<input type="number" name="delay_max" min="0" step="0.5"></label>
         <label>Поиск по сообщениям: за сколько дней<input type="number" name="msg_search_days" min="1" max="365"></label>
@@ -293,6 +304,6 @@
 </main>
 
 <div id="toast" hidden></div>
-<script src="/static/app.js?v=1.0.9"></script>
+<script src="/static/app.js?v=1.1.0"></script>
 </body>
 </html>

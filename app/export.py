@@ -16,7 +16,7 @@ FILLS = {"live": "C6EFCE", "low": "FFEB9C", "dead": "D9D9D9", "spam": "FFC7CE", 
 
 COLUMNS = [
     ("Ссылка", 32), ("Название", 34), ("Тип", 9), ("Страна", 14), ("Город", 16), ("Участники", 11), ("Онлайн", 9),
-    ("Сообщ./день", 11), ("Последнее сообщение", 18), ("Людей в выборке", 11), ("От людей, %", 10), ("Диалогов, %", 10),
+    ("Сообщ./день", 11), ("Последнее сообщение", 18), ("Активных людей за 7 дней", 12), ("Людей в выборке", 11), ("От людей, %", 10), ("Диалогов, %", 10),
     ("Живость", 9), ("Спам", 7), ("Вердикт", 12), ("Целевой", 9), ("Категория", 28), ("Тематика", 32),
     ("Аудитория", 32), ("Описание чата", 50), ("Вывод ИИ", 60), ("Язык", 6), ("Источник", 24),
     ("Статус", 12), ("Проверен", 17),
@@ -102,7 +102,7 @@ def export(f: dict) -> str:
             ch["link"], ch["title"], {"channel": "Канал", "group": "Группа"}.get(ch["type"], ""),
             COUNTRY_NAMES.get(ch["country"], ch["country"]) if ch["country"] else "", ch["city"] or "",
             ch["members"], ch["online"], ch["msgs_per_day"], _ts(ch["last_msg_at"]),
-            m.get("unique_authors"),
+            ch["weekly_active"], m.get("unique_authors"),
             round(m["human_share"] * 100) if m.get("human_share") is not None else None,
             round(m["dialog_ratio"] * 100) if m.get("dialog_ratio") is not None else None,
             ch["live_score"], ch["spam_score"], VERDICTS.get(ch["verdict"], ""), "Да" if ch["is_target"] else "",

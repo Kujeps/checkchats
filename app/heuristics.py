@@ -113,6 +113,9 @@ def _group(m, msgs, online, now, dead_days):
 
     human_mpd = hn / span_days
     days_since_human = (now - max(x["date"] for x in human)) / 86400 if human else None
+    week = [x for x in human if now - x["date"] <= 7 * 86400]
+    weekly_active = len({x.get("sender") for x in week})
+    # Если история не покрыла неделю целиком (очень активный чат), это оценка снизу
 
     dup, kw, links, fwd = _content(msgs)
     m.update(msgs_per_day=round(n / span_days, 2), human_msgs_per_day=round(human_mpd, 2),
@@ -120,6 +123,7 @@ def _group(m, msgs, online, now, dead_days):
              days_since_human=round(days_since_human, 2) if days_since_human is not None else None,
              human_share=round(human_share, 3), bot_ratio=round(bot_ratio, 3), chat_ratio=round(chat_ratio, 3),
              unique_authors=unique, repeat_authors=repeat_authors, top_author_share=round(top_share, 3),
+             weekly_active=weekly_active, weekly_human_msgs=len(week), history_days=round(span_days, 1),
              dialog_ratio=round(dialog_ratio, 3), dup_ratio=round(dup, 3), spam_kw_ratio=round(kw, 3),
              link_ratio=round(links, 3), fwd_ratio=round(fwd, 3))
 
@@ -195,7 +199,7 @@ def _channel(m, msgs, linked, now, dead_days):
     # Группу обсуждения оцениваем как обычный чат; автопересылки постов там — «от имени чата»
     d = _group({"n": len(linked)}, [x for x in linked if x.get("date")], None, now, dead_days)
     for k in ("human_share", "unique_authors", "dialog_ratio", "human_msgs_per_day", "days_since_human",
-              "bot_ratio", "chat_ratio", "top_author_share"):
+              "bot_ratio", "chat_ratio", "top_author_share", "weekly_active", "weekly_human_msgs", "history_days"):
         m[k] = d.get(k)
     m["discussion_live"] = d["live"]
     m["live"] = d["live"]

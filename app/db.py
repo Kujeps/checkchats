@@ -118,7 +118,9 @@ DEFAULTS = {
     "llm_messages": 40,            # сколько сообщений отдавать ИИ
     "llm_msg_chars": 300,          # обрезка каждого сообщения
     "keep_sample": False,          # хранить выборку после анализа
-    "messages_limit": 150,         # сколько последних сообщений читать
+    "messages_limit": 150,         # минимум последних сообщений
+    "history_days": 7,             # читать историю так, чтобы покрыть столько дней…
+    "history_max": 1000,           # …но не больше стольких сообщений
     "delay_min": 4,                # пауза между чатами на одном аккаунте, сек
     "delay_max": 9,
     "max_active_accounts": 30,     # одновременно работающих аккаунтов, 0 — все
@@ -181,7 +183,9 @@ MIGRATIONS = [
     ("chats", "checked_by", "INTEGER"),
     ("queries", "kind", "TEXT"),                  # title | messages | both
     ("chats", "country", "TEXT"),                 # код страны или «?»
-    ("chats", "city", "TEXT"),            # аккаунт, проверявший чат (у него чат в кэше)
+    ("chats", "city", "TEXT"),
+    ("chats", "weekly_active", "INTEGER"),        # разных людей писали за последние 7 дней
+    ("chats", "priority", "INTEGER DEFAULT 0"),   # чем выше, тем раньше проверяется            # аккаунт, проверявший чат (у него чат в кэше)
 ]
 
 
@@ -243,20 +247,40 @@ def save_settings(values: dict):
 
 # ---------- чаты ----------
 
-def add_chats(items, source="import", depth=0, preferred_account=None) -> int:
-    """items: [(kind, value)]; возвращает число новых."""
+# Приоритет очереди: чем выше, тем раньше чат проверят
+PRIORITY_IMPORT = 0
+PRIORITY_SEARCH_TITLE = 20
+PRIORITY_SEARCH_MESSAGES = 30      # + до 40 за число совпадений в сообщениях
+PRIORITY_FROM_LIVE = 40            # ссылки и похожие каналы из живого чата
+PRIORITY_FROM_LIVE_TARGET = 50     # …из живого целевого
+PRIORITY_FROM_LOW = 15             # …из слабого
+PREFERRED_BONUS = 25               # чат уже в кэше этого аккаунта — лимит не тратится
+
+
+def add_chats(items, source="import", depth=0, preferred_account=None, priority=PRIORITY_IMPORT) -> int:
+    """items: [(kind, value)] или [(kind, value, priority)]; возвращает число новых.
+
+    Если чат уже стоит в очереди, а пришёл из источника получше — поднимаем ему приоритет.
+    """
     from .links import chat_key, link_for
     added = 0
     ts = now()
     c = conn()
     c.execute("BEGIN")
     try:
-        for kind, value in items:
+        for item in items:
+            kind, value = item[0], item[1]
+            prio = item[2] if len(item) > 2 else priority
+            key = chat_key(kind, value)
             cur = c.execute(
-                "INSERT OR IGNORE INTO chats(key, kind, value, link, source, depth, preferred_account, added_at) "
-                "VALUES(?,?,?,?,?,?,?,?)",
-                (chat_key(kind, value), kind, value, link_for(kind, value), source, depth, preferred_account, ts))
-            added += cur.rowcount
+                "INSERT OR IGNORE INTO chats(key, kind, value, link, source, depth, preferred_account, priority, "
+                "added_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (key, kind, value, link_for(kind, value), source, depth, preferred_account, prio, ts))
+            if cur.rowcount:
+                added += 1
+            else:
+                c.execute("UPDATE chats SET priority=? WHERE key=? AND status='pending' AND COALESCE(priority, 0) < ?",
+                          (prio, key, prio))
         c.execute("COMMIT")
     except Exception:
         c.execute("ROLLBACK")

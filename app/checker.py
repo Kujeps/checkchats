@@ -117,7 +117,7 @@ class Checker:
         return utils.get_input_peer(ent), True
 
     async def check(self, chat: dict, messages_limit: int, join_private: bool, leave_after_join: bool,
-                    similar: bool = False):
+                    similar: bool = False, history_days: int = 7, history_max: int = 1000):
         joined = None
         if chat["kind"] == "invite":
             peer, meta = await self._by_invite(chat["value"], join_private)
@@ -128,7 +128,7 @@ class Checker:
             peer, _ = await self._peer_by_username(chat["value"])
 
         try:
-            return await self._read(peer, messages_limit, similar)
+            return await self._read(peer, messages_limit, similar, history_days, history_max)
         finally:
             if joined is not None and leave_after_join:
                 try:
@@ -172,7 +172,20 @@ class Checker:
             "found": [],
         }
 
-    async def _read(self, peer, messages_limit, similar=False):
+    async def _history(self, entity, min_count, days, max_count):
+        """Последние сообщения: не меньше min_count и так, чтобы покрыть days дней, но не больше max_count.
+
+        Читаем страницами по 100 и останавливаемся, как только дошли до нужной давности.
+        """
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        out = []
+        async for m in self.client.iter_messages(entity, limit=max(min_count, max_count)):
+            out.append(m)
+            if len(out) >= min_count and m.date and m.date < since:
+                break
+        return out
+
+    async def _read(self, peer, messages_limit, similar=False, history_days=7, history_max=1000):
         if not isinstance(peer, InputPeerChannel):
             raise ChatGone("not_chat", "не канал и не супергруппа")
         try:
@@ -184,7 +197,7 @@ class Checker:
         ctype = "channel" if getattr(ent, "broadcast", False) else "group"
 
         try:
-            raw = await self.client.get_messages(peer, limit=messages_limit)
+            raw = await self._history(peer, messages_limit, history_days, history_max)
         except errors.ChannelPrivateError:
             raise ChatGone("private", "история скрыта")
         msgs = [m for m in (_conv(x) for x in raw) if m]
@@ -194,7 +207,7 @@ class Checker:
             lent = next((c for c in full.chats if c.id == fc.linked_chat_id), None)
             if lent is not None:
                 try:
-                    lraw = await self.client.get_messages(lent, limit=min(80, messages_limit))
+                    lraw = await self._history(lent, min(80, messages_limit), history_days, max(80, history_max // 2))
                     linked = [m for m in (_conv(x) for x in lraw) if m]
                 except errors.RPCError:
                     pass
@@ -228,7 +241,7 @@ class Checker:
     async def search_messages(self, query: str, days: int, pages: int, take_budget) -> tuple[list, int]:
         """Глобальный поиск по сообщениям в публичных группах за последние days дней.
 
-        Находит чаты, где люди прямо сейчас пишут об этом. Возвращает (usernames по числу совпадений,
+        Находит чаты, где люди прямо сейчас пишут об этом. Возвращает ([(username, совпадений)…] по убыванию,
         сколько страниц запрошено). take_budget() списывает один запрос из лимита или говорит, что его нет.
         """
         hits = Counter()
@@ -261,7 +274,7 @@ class Checker:
             if last_chat is None:
                 break
             rate, offset_peer, offset_id = next_rate, utils.get_input_peer(last_chat), last.id
-        return [u for u, _ in hits.most_common()], used
+        return hits.most_common(), used
 
     async def search(self, query: str):
         res = await self.client(SearchRequest(q=query, limit=100))

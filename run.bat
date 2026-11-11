@@ -16,4 +16,14 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 ".venv\Scripts\python.exe" run.py
+if %errorlevel% EQU 3 goto restart
 pause
+exit /b
+:restart
+".venv\Scripts\python.exe" run.py
+if %errorlevel% EQU 3 goto restart
+pause
+exit /b
+REM Код 3 — программа обновилась и просит перезапуск (кнопка «Обновить программу»).
+REM Строки до первого запуска run.py не меняйте: после обновления Windows дочитывает этот файл
+REM с того же места, поэтому их положение должно совпадать со старой версией.

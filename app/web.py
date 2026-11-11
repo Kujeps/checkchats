@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import time
+import uuid
 from pathlib import Path
 
 import httpx
@@ -11,7 +12,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import accounts, db, export, llm, proxycheck
+from . import accounts, db, export, llm, proxycheck, updater
 from .engine import GLOBAL_PROXY, LOG, check_account_proxy, check_global_proxy, engine, say
 from .links import parse_link
 from .paths import STATIC_DIR
@@ -61,6 +62,43 @@ async def stop():
     return {"ok": True}
 
 
+BOOT_ID = uuid.uuid4().hex   # меняется при каждом запуске — так страница понимает, что поднялась новая копия
+
+
+@app.get("/api/version")
+async def get_version():
+    return {**(await updater.version()), "boot": BOOT_ID}
+
+
+@app.post("/api/update/check")
+async def update_check():
+    try:
+        return await updater.check()
+    except updater.UpdateError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/update")
+async def update(request: Request):
+    try:
+        res = await updater.pull()
+    except updater.UpdateError as e:
+        raise HTTPException(400, str(e))
+    if not res["updated"]:
+        return {**res, "restart": False}
+    say(f"Обновление: {len(res['changes'])} изменений" + (", зависимости установлены" if res["deps"] else "")
+        + " — перезапуск")
+
+    async def restart_soon():
+        await asyncio.sleep(0.5)          # даём ответу уйти в браузер
+        await engine.stop()               # аккаунты и ИИ останавливаются аккуратно
+        request.app.state.restart = True
+        request.app.state.server.should_exit = True
+
+    asyncio.create_task(restart_soon())
+    return {**res, "restart": True}
+
+
 @app.get("/api/log")
 async def get_log(since: float = 0):
     return [x for x in LOG if x["t"] > since]
@@ -83,7 +121,7 @@ async def set_settings(request: Request):
         data.pop("openrouter_key", None)
     data.pop("llm_spent", None)
     ints = {"llm_concurrency", "llm_messages", "llm_msg_chars", "messages_limit", "resolve_limit", "search_limit",
-            "max_flood_sleep", "max_active_accounts", "snowball_depth", "msg_search_days", "msg_search_pages", "join_limit", "live_threshold", "spam_threshold", "dead_days"}
+            "max_flood_sleep", "max_active_accounts", "history_days", "history_max", "snowball_depth", "msg_search_days", "msg_search_pages", "join_limit", "live_threshold", "spam_threshold", "dead_days"}
     for k in list(data):
         if k in ints:
             data[k] = int(data[k])
@@ -308,7 +346,8 @@ async def upload_chats(files: list[UploadFile] = File(...)):
     return out
 
 
-SORTS = {"geo": "CASE country WHEN 'RU' THEN 0 WHEN '?' THEN 2 ELSE 1 END, country, city",
+SORTS = {"active": "weekly_active DESC",
+         "geo": "CASE country WHEN 'RU' THEN 0 WHEN '?' THEN 2 ELSE 1 END, country, city",
          "live": "live_score DESC", "members": "members DESC", "activity": "msgs_per_day DESC",
          "recent": "checked_at DESC", "added": "id DESC", "title": "title"}
 
@@ -323,7 +362,7 @@ async def list_chats(request: Request, page: int = 1, size: int = 50, sort: str 
     order = SORTS.get(sort, SORTS["live"])
     rows = db.all_(f"""SELECT id, link, value, title, type, members, online, msgs_per_day, last_msg_at, status, error,
                        live_score, spam_score, h_live, verdict, is_target, category, topic, summary, about, source,
-                       country, city,
+                       country, city, weekly_active,
                        llm_status, llm_error, metrics FROM chats WHERE {where}
                        ORDER BY {order} NULLS LAST, id LIMIT ? OFFSET ?""",
                    args + [size, (max(page, 1) - 1) * size])

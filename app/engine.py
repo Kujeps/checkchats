@@ -126,10 +126,11 @@ def save_check(chat, res, acc_id, s):
     sample = _sample(res, metrics, s)
     db.q("""UPDATE chats SET status='checked', error=NULL, tg_id=?, type=?, title=?, about=?, members=?, online=?,
             metrics=?, sample=?, h_live=?, h_spam=?, msgs_per_day=?, last_msg_at=?, checked_at=?,
-            checked_by=?, llm_status='pending' WHERE id=?""",
+            checked_by=?, weekly_active=?, llm_status='pending' WHERE id=?""",
          (res["tg_id"], res["type"], res["title"], res["about"], res["members"], res["online"],
           json.dumps(metrics, ensure_ascii=False), json.dumps(sample, ensure_ascii=False), h_live, h_spam,
-          metrics.get("msgs_per_day"), metrics.get("last_msg_at"), db.now(), acc_id, chat["id"]))
+          metrics.get("msgs_per_day"), metrics.get("last_msg_at"), db.now(), acc_id,
+          metrics.get("weekly_active"), chat["id"]))
 
     has_text = sample["messages"] or sample["linked"] or res["title"]
     dead = metrics.get("verdict") == "dead"
@@ -182,10 +183,12 @@ def finalize(chat_id, ai, s):
         title = row["title"] or row["value"]
         found = [tuple(x) for x in sample.get("found") or []]
         similar = [("username", u) for u in sample.get("similar") or []]
+        prio = (db.PRIORITY_FROM_LIVE_TARGET if verdict == "live" and is_target else
+                db.PRIORITY_FROM_LIVE if verdict == "live" else db.PRIORITY_FROM_LOW)
         n1 = db.add_chats(found, source=f"snowball:{title}"[:120], depth=row["depth"] + 1,
-                          preferred_account=row["checked_by"]) if found else 0
+                          preferred_account=row["checked_by"], priority=prio) if found else 0
         n2 = db.add_chats(similar, source=f"similar:{title}"[:120], depth=row["depth"] + 1,
-                          preferred_account=row["checked_by"]) if similar else 0
+                          preferred_account=row["checked_by"], priority=prio) if similar else 0
         if n1 or n2:
             say(f"+{n1 + n2} новых чатов из «{title}» (ссылки и репосты: {n1}, похожие каналы: {n2})")
 
@@ -351,7 +354,8 @@ class Worker:
     def _claim(self):
         # Сначала чаты, найденные этим же аккаунтом: они уже в его кэше и не тратят лимит
         row = db.one("SELECT * FROM chats WHERE status='pending' "
-                     "ORDER BY (preferred_account = ?) DESC, depth, id LIMIT 1", (self.acc_id,))
+                     "ORDER BY COALESCE(priority, 0) + CASE WHEN preferred_account = ? THEN ? ELSE 0 END DESC, "
+                     "depth, id LIMIT 1", (self.acc_id, db.PREFERRED_BONUS))
         if row:
             db.q("UPDATE chats SET status='checking' WHERE id=?", (row["id"],))
         return row
@@ -461,7 +465,8 @@ class Worker:
         """True — продолжаем, False — аккаунт больше не работает."""
         try:
             res = await checker.check(chat, s["messages_limit"], s["join_private"], s["leave_after_join"],
-                                      similar=s["similar_channels"] and s["snowball"])
+                                      similar=s["similar_channels"] and s["snowball"],
+                                      history_days=s["history_days"], history_max=s["history_max"])
             if res["status"] == "private" and not res.get("title"):
                 raise ChatGone("private", "нет доступа")
             save_check(chat, res, self.acc_id, s)
@@ -519,36 +524,44 @@ class Worker:
         self.state = "search"
         kind = qrow.get("kind") or "title"
         q = qrow["q"]
-        names, parts = [], []
+        prio = {}   # username → приоритет в очереди (лучший из источников)
+        parts = []
+
+        def keep(u, p):
+            prio[u] = max(prio.get(u, 0), p)
+
+        def save():
+            return db.add_chats([("username", u, p) for u, p in prio.items()], source=f"search:{q}"[:120],
+                                preferred_account=self.acc_id)
+
         try:
             if kind in ("title", "both"):
                 self.use_search()
                 found = await checker.search(q)
-                names += found
+                for u in found:
+                    keep(u, db.PRIORITY_SEARCH_TITLE)
                 parts.append(f"в названиях {len(found)}")
             if kind in ("messages", "both") and self.can_search():
                 found, _ = await checker.search_messages(q, s["msg_search_days"], s["msg_search_pages"],
                                                          self.take_search)
-                names += found
+                for u, hits in found:
+                    # больше совпадений — чаще там об этом говорят — раньше проверим
+                    keep(u, db.PRIORITY_SEARCH_MESSAGES + min(hits, 20) * 2)
                 parts.append(f"в сообщениях {len(found)}")
-            names = list(dict.fromkeys(names))
-            n = db.add_chats([("username", u) for u in names], source=f"search:{q}"[:120],
-                             preferred_account=self.acc_id)
+            n = save()
             if kind == "both" and len(parts) == 1:
                 # на поиск по сообщениям у аккаунта не хватило лимита — оставим эту часть другому
                 db.q("UPDATE queries SET status='pending', kind='messages', found=found+? WHERE id=?",
                      (n, qrow["id"]))
-                say(f"[{self.name}] поиск «{q}»: в названиях {len(names)}, новых {n}; "
+                say(f"[{self.name}] поиск «{q}»: в названиях {len(prio)}, новых {n}; "
                     "поиск по сообщениям — другим аккаунтом (лимит исчерпан)")
             else:
                 db.q("UPDATE queries SET status='done', found=found+?, done_at=? WHERE id=?",
                      (n, db.now(), qrow["id"]))
                 say(f"[{self.name}] поиск «{q}»: найдено {', '.join(parts)}, новых {n}")
         except errors.FloodWaitError as e:
-            if names:
-                # часть уже нашли (например, по названиям) — не теряем её
-                db.add_chats([("username", u) for u in names], source=f"search:{q}"[:120],
-                             preferred_account=self.acc_id)
+            if prio:
+                save()   # часть уже нашли (например, по названиям) — не теряем её
             db.q("UPDATE queries SET status='pending' WHERE id=?", (qrow["id"],))
             await self._flood(e.seconds, s)
         except Exception as e:  # noqa: BLE001

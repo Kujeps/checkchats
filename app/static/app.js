@@ -168,7 +168,7 @@ async function loadChats() {
       <td>${r.country ? esc(COUNTRY[r.country] || r.country) : ""}${r.city ? `<div class="sub">${esc(r.city)}</div>` : ""}</td>
       <td class="num">${fmt(r.members)}</td>
       <td class="num">${r.msgs_per_day != null ? Number(r.msgs_per_day).toFixed(1) : "—"}</td>
-      <td class="num">${fmt(r.authors)}${r.human != null ? `<div class="sub">${Math.round(r.human * 100)}% от людей</div>` : ""}</td>
+      <td class="num">${fmt(r.weekly_active ?? r.authors)}${r.human != null ? `<div class="sub">${Math.round(r.human * 100)}% от людей</div>` : ""}</td>
       <td class="num">${live ?? "—"}</td>
       <td class="num">${r.spam_score ?? "—"}</td>
       <td>${v}</td>
@@ -471,10 +471,66 @@ $("#btnTestLlm").addEventListener("click", run(async () => {
   finally { $("#btnTestLlm").disabled = false; }
 }));
 
+// ---------- обновление программы ----------
+let bootId = null;
+async function loadVersion() {
+  const v = await api("/api/version");
+  bootId = v.boot;
+  $("#versionInfo").textContent = v.updatable
+    ? `— версия ${v.commit} от ${new Date(v.date).toLocaleDateString("ru-RU")}`
+    : "";
+  if (!v.updatable) {
+    $("#btnCheckUpdate").disabled = true;
+    $("#updateInfo").innerHTML = `<span class="muted">Обновление кнопкой недоступно: ${esc(v.reason)}</span>`;
+  }
+}
+
+$("#btnCheckUpdate").addEventListener("click", run(async () => {
+  const btn = $("#btnCheckUpdate");
+  btn.disabled = true;
+  $("#updateInfo").textContent = "Проверяю…";
+  try {
+    const r = await api("/api/update/check", { json: {} });
+    $("#btnUpdate").hidden = !r.behind;
+    $("#updateInfo").innerHTML = r.behind
+      ? `<div class="ok-text">Доступно обновлений: ${r.behind}</div><ul>${r.changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>`
+      : '<span class="muted">У вас последняя версия.</span>';
+  } finally { btn.disabled = false; }
+}));
+
+$("#btnUpdate").addEventListener("click", run(async () => {
+  if (!confirm("Обновить программу и перезапустить её? Работающие аккаунты аккуратно остановятся, " +
+               "после перезапуска нажмите «Запустить» снова.")) return;
+  $("#btnUpdate").disabled = $("#btnCheckUpdate").disabled = true;
+  $("#updateInfo").textContent = "Скачиваю обновление… (если поменялись зависимости — до пары минут)";
+  let r;
+  try { r = await api("/api/update", { json: {} }); }
+  catch (e) { $("#btnUpdate").disabled = $("#btnCheckUpdate").disabled = false; throw e; }
+  if (!r.restart) {
+    $("#updateInfo").innerHTML = '<span class="muted">Обновлять нечего — у вас последняя версия.</span>';
+    $("#btnUpdate").hidden = true;
+    $("#btnCheckUpdate").disabled = false;
+    return;
+  }
+  $("#updateInfo").innerHTML = `<div class="ok-text">Обновлено, перезапуск…</div>`;
+  // Ждём, пока старая копия выключится и новая поднимется, затем перезагружаем страницу
+  const started = Date.now();
+  await new Promise((res) => setTimeout(res, 2500));
+  while (Date.now() - started < 120000) {
+    try {
+      const v = await fetch("/api/version").then((x) => x.json());
+      if (v.boot && v.boot !== bootId) { location.reload(); return; }
+    } catch (_) {}
+    await new Promise((res) => setTimeout(res, 1500));
+  }
+  $("#updateInfo").innerHTML = '<span class="danger-text">Программа не поднялась сама — запустите run.bat заново.</span>';
+}));
+
 // ---------- старт ----------
 try { const t = localStorage.getItem("tab"); if (t) $(`nav button[data-tab="${t}"]`)?.click(); } catch (_) {}
 run(refreshStatus)();
 run(loadCategories)();
+run(loadVersion)();
 setInterval(() => {
   run(refreshStatus)();
   if (document.hidden) return;
