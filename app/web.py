@@ -10,8 +10,8 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import accounts, db, export, llm
-from .engine import LOG, engine, say
+from . import accounts, db, export, llm, proxycheck
+from .engine import LOG, check_account_proxy, engine, say
 from .links import parse_link
 from .paths import STATIC_DIR
 
@@ -130,7 +130,7 @@ def scan_accounts_folder(force=False):
 async def list_accounts():
     scan_accounts_folder()
     rows = db.all_("SELECT id, name, proxy, status, flood_until, day, resolves_today, searches_today, joins_today, "
-                   "checked_total, me, last_error FROM accounts ORDER BY id")
+                   "checked_total, me, last_error, proxy_ok, proxy_info FROM accounts ORDER BY id")
     today = db.today()
     for r in rows:
         proxy = r.pop("proxy")
@@ -153,7 +153,34 @@ async def upload_accounts(files: list[UploadFile] = File(...)):
 @app.post("/api/accounts/proxies")
 async def set_proxies(request: Request):
     data = await request.json()
-    return accounts.assign_proxies((data.get("text") or "").splitlines(), bool(data.get("overwrite")))
+    return accounts.assign_proxies((data.get("text") or "").splitlines(), data.get("mode") or "empty")
+
+
+@app.post("/api/proxies/check")
+async def check_proxy_list(request: Request):
+    lines = [ln.strip() for ln in ((await request.json()).get("text") or "").splitlines()
+             if ln.strip() and not ln.strip().startswith("#")]
+    return await proxycheck.check_many(lines)
+
+
+@app.post("/api/accounts/check_proxies")
+async def check_account_proxies():
+    rows = db.all_("SELECT * FROM accounts WHERE proxy IS NOT NULL AND proxy!='' AND status NOT IN ('dead','frozen')")
+    sem = asyncio.Semaphore(30)
+
+    async def one(acc):
+        async with sem:
+            return await check_account_proxy(acc)
+
+    res = await asyncio.gather(*(one(a) for a in rows))
+    ok = sum(1 for r in res if r["ok"])
+    say(f"Проверка прокси: рабочих {ok}, нерабочих {len(res) - ok}")
+    return {"ok": ok, "bad": len(res) - ok}
+
+
+@app.get("/api/net/direct")
+async def net_direct():
+    return await proxycheck.check_direct()
 
 
 @app.post("/api/accounts/{acc_id}")

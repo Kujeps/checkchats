@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CheckChats</title>
-<link rel="stylesheet" href="/static/style.css?v=1.0.1">
+<link rel="stylesheet" href="/static/style.css?v=1.0.2">
 </head>
 <body>
 <header>
@@ -120,11 +120,16 @@
     </div>
     <div class="panel">
       <h3>Прокси</h3>
-      <p class="muted small">По одному на строку. Каждому аккаунту — свой прокси навсегда. Форматы: <code>socks5://user:pass@host:port</code>, <code>http://host:port</code>, <code>host:port:user:pass</code>.</p>
+      <p class="muted small">По одному на строку. Каждому аккаунту — свой прокси навсегда. Форматы: <code>socks5://user:pass@host:port</code>, <code>http://host:port</code>, <code>host:port:user:pass</code>. Если тип не указан, проверка определит его сама.</p>
       <textarea id="proxyText" rows="4"></textarea>
       <div class="row">
-        <button id="btnProxies" class="primary">Раздать аккаунтам без прокси</button>
-        <label class="chk"><input type="checkbox" id="proxyOverwrite"> переназначить всем</label>
+        <button id="btnCheckProxyList">Проверить список</button>
+        <select id="proxyMode">
+          <option value="empty">аккаунтам без прокси</option>
+          <option value="broken">без прокси и с нерабочим</option>
+          <option value="all">всем аккаунтам заново</option>
+        </select>
+        <button id="btnProxies" class="primary">Раздать</button>
       </div>
       <div id="proxyResult" class="small"></div>
     </div>
@@ -132,8 +137,11 @@
   <div class="panel">
     <div class="row">
       <h3 class="grow">Список аккаунтов</h3>
-      <button id="btnCheckAcc">Проверить все</button>
+      <button id="btnDirect" class="ghost">Связь с Telegram без прокси</button>
+      <button id="btnCheckProxies">Проверить прокси</button>
+      <button id="btnCheckAcc">Проверить аккаунты</button>
     </div>
+    <div id="netResult" class="small"></div>
     <div class="table-wrap">
       <table id="accTable">
         <thead><tr><th>Аккаунт</th><th>Прокси</th><th>Статус</th><th class="num">Username сегодня</th>
@@ -242,6 +250,6 @@
 </main>
 
 <div id="toast" hidden></div>
-<script src="/static/app.js?v=1.0.1"></script>
+<script src="/static/app.js?v=1.0.2"></script>
 </body>
 </html>

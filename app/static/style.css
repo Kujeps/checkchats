@@ -43,7 +43,7 @@ button:hover, .file:hover { border-color: var(--accent); }
 button:disabled { opacity: .5; cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
-button.ghost { background: none; } .danger-text { color: var(--danger); }
+button.ghost { background: none; } .danger-text { color: var(--danger); } .ok-text { color: var(--live); }
 label.file { display: inline-block; margin: 0; color: var(--text); font-size: 14px; }
 label.file input[type=file] { display: none; }
 label.file.big { display: block; text-align: center; padding: 22px; border-style: dashed; }

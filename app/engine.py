@@ -10,9 +10,10 @@ from datetime import datetime, timedelta
 import httpx
 from telethon import errors
 
-from . import db, heuristics, llm
+from . import db, heuristics, llm, proxycheck
 from .accounts import make_client
 from .checker import Checker, ChatGone, NeedResolve
+from .proxycheck import net_error_text
 
 log = logging.getLogger("engine")
 LOG = deque(maxlen=400)
@@ -27,6 +28,17 @@ NET_ERRORS = (ConnectionError, OSError, asyncio.TimeoutError)
 def say(msg, level="info"):
     LOG.append({"t": time.time(), "level": level, "msg": msg})
     getattr(log, "warning" if level == "warn" else level, log.info)(msg)
+
+
+async def check_account_proxy(acc) -> dict:
+    """Проверяет прокси аккаунта, запоминает результат; найденный тип дописывает в строку прокси."""
+    r = await proxycheck.check(acc["proxy"])
+    info = f"{r['type']}, {r['ms']} мс" if r["ok"] else r["error"]
+    db.q("UPDATE accounts SET proxy=?, proxy_ok=?, proxy_info=?, proxy_checked_at=? WHERE id=?",
+         (r["fixed"] if r["ok"] else acc["proxy"], int(r["ok"]), info[:300], time.time(), acc["id"]))
+    if r["ok"] and acc["status"] == "proxy_error":
+        db.q("UPDATE accounts SET status='new', last_error=NULL WHERE id=?", (acc["id"],))
+    return r
 
 
 def _seconds_to_midnight():
@@ -166,6 +178,13 @@ class Worker:
 
     async def connect(self):
         acc = db.one("SELECT * FROM accounts WHERE id=?", (self.acc_id,))
+        if acc["proxy"]:
+            # Сначала быстро проверяем прокси, чтобы не мучить Telegram заведомо мёртвым соединением
+            r = await check_account_proxy(acc)
+            if not r["ok"]:
+                self._set("proxy_error", f"прокси: {r['error']}")
+                return False
+            acc = db.one("SELECT * FROM accounts WHERE id=?", (self.acc_id,))
         try:
             self.client = make_client(acc)
         except Exception as e:  # noqa: BLE001
@@ -173,15 +192,14 @@ class Worker:
             return False
         try:
             await asyncio.wait_for(self.client.connect(), 45)
-            if not await self.client.is_user_authorized():
-                self._set("dead", "сессия не авторизована")
-                return False
-            me = await self.client.get_me()
-            label = " ".join(x for x in (me.first_name, me.last_name) if x) or str(me.id)
-            if me.username:
-                label += f" @{me.username}"
-            self._set("active", None, me=label)
-            return True
+            if await self.client.is_user_authorized():
+                me = await self.client.get_me()
+                label = " ".join(x for x in (me.first_name, me.last_name) if x) or str(me.id)
+                if me.username:
+                    label += f" @{me.username}"
+                self._set("active", None, me=label)
+                return True
+            self._set("dead", "сессия не авторизована")
         except DEAD_ERRORS as e:
             self._set("dead", type(e).__name__)
         except FROZEN_ERRORS as e:
@@ -189,7 +207,8 @@ class Worker:
         except errors.FloodWaitError as e:
             self._set("flood", f"FloodWait {e.seconds} c", flood_until=time.time() + e.seconds)
         except NET_ERRORS as e:
-            self._set("proxy_error", f"нет соединения: {str(e) or type(e).__name__}")
+            via = "через прокси" if acc["proxy"] else "напрямую (Telegram может быть заблокирован)"
+            self._set("proxy_error", f"нет связи с Telegram {via}: {net_error_text(e)}")
         except Exception as e:  # noqa: BLE001 — показываем любую ошибку в интерфейсе
             self._set("proxy_error", f"{type(e).__name__}: {e}")
         await self.disconnect()
@@ -297,7 +316,7 @@ class Worker:
             return False
         except NET_ERRORS as e:
             db.q("UPDATE chats SET status='pending' WHERE id=?", (chat["id"],))
-            say(f"[{self.name}] сеть: {str(e) or type(e).__name__}, переподключение", "warn")
+            say(f"[{self.name}] сеть: {net_error_text(e)}, переподключение", "warn")
             await self._sleep(15)
             await self.disconnect()
             if not await self.connect():

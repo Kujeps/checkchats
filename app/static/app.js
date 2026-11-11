@@ -205,7 +205,9 @@ async function loadAccounts() {
     return `<tr data-id="${a.id}">
       <td><b>${esc(a.name)}</b><div class="sub">${esc(a.me || "")}</div></td>
       <td>${a.proxy_label ? esc(a.proxy_label) : '<span class="danger-text">нет</span>'}
-        <button class="ghost small" data-act="proxy">изменить</button></td>
+        <button class="ghost small" data-act="proxy">изменить</button>
+        ${a.proxy_label ? `<div class="sub ${a.proxy_ok === 1 ? "ok-text" : a.proxy_ok === 0 ? "danger-text" : ""}">${
+          a.proxy_ok === 1 ? "✓ " + esc(a.proxy_info) : a.proxy_ok === 0 ? "✗ " + esc(a.proxy_info) : "не проверен"}</div>` : ""}</td>
       <td class="st-${st}">${ACC_STATUS[st] || st}${extra}</td>
       <td class="num">${a.resolves_today} / ${settings.resolve_limit}</td>
       <td class="num">${a.searches_today} / ${settings.search_limit}</td>
@@ -245,8 +247,40 @@ $("#accFiles").addEventListener("change", run(async (e) => {
   e.target.value = "";
   loadAccounts();
 }));
+$("#btnCheckProxyList").addEventListener("click", run(async () => {
+  const btn = $("#btnCheckProxyList");
+  btn.disabled = true;
+  $("#proxyResult").textContent = "Проверяю… (до 25 секунд на нерабочий прокси)";
+  try {
+    const res = await api("/api/proxies/check", { json: { text: $("#proxyText").value } });
+    const ok = res.filter((r) => r.ok), bad = res.filter((r) => !r.ok);
+    // В поле оставляем только рабочие, с определённым типом — их и раздавать
+    $("#proxyText").value = ok.map((r) => r.fixed).join("\n");
+    $("#proxyResult").innerHTML = `<div class="ok-text">Рабочих: ${ok.length} — оставлены в поле, тип дописан.</div>` +
+      (bad.length ? `<div class="danger-text">Нерабочих: ${bad.length}:<br>${bad.map((r) =>
+        `${esc(r.line)} — ${esc(r.error)}`).join("<br>")}</div>` : "");
+  } finally { btn.disabled = false; }
+}));
+$("#btnCheckProxies").addEventListener("click", run(async () => {
+  const btn = $("#btnCheckProxies");
+  btn.disabled = true;
+  $("#netResult").textContent = "Проверяю прокси аккаунтов…";
+  try {
+    const r = await api("/api/accounts/check_proxies", { json: {} });
+    $("#netResult").innerHTML = `Прокси: рабочих <span class="ok-text">${r.ok}</span>, нерабочих <span class="danger-text">${r.bad}</span>` +
+      (r.bad ? ". Нерабочие можно заменить: вставьте новые прокси выше и выберите «без прокси и с нерабочим»." : "");
+  } finally { btn.disabled = false; }
+  loadAccounts();
+}));
+$("#btnDirect").addEventListener("click", run(async () => {
+  $("#netResult").textContent = "Проверяю прямую связь с Telegram…";
+  const r = await api("/api/net/direct");
+  $("#netResult").innerHTML = r.ok
+    ? `<span class="ok-text">Telegram доступен с этого компьютера напрямую (${r.ms} мс).</span>`
+    : `<span class="danger-text">Напрямую Telegram недоступен: ${esc(r.error)}.</span> Без рабочих прокси аккаунты не подключатся.`;
+}));
 $("#btnProxies").addEventListener("click", run(async () => {
-  const r = await api("/api/accounts/proxies", { json: { text: $("#proxyText").value, overwrite: $("#proxyOverwrite").checked } });
+  const r = await api("/api/accounts/proxies", { json: { text: $("#proxyText").value, mode: $("#proxyMode").value } });
   $("#proxyResult").innerHTML = `Назначено: ${r.assigned} из ${r.valid} подходящих. Аккаунтов осталось без прокси: ${r.without_proxy}` +
     (r.bad.length ? `<div class="danger-text">${r.bad.map(esc).join("<br>")}</div>` : "");
   loadAccounts();

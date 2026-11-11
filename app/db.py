@@ -155,7 +155,23 @@ def conn() -> sqlite3.Connection:
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA synchronous=NORMAL")
         _conn.executescript(SCHEMA)
+        _migrate(_conn)
     return _conn
+
+
+# Колонки, добавленные после первой версии: у уже созданных баз их нужно дописать
+MIGRATIONS = [
+    ("accounts", "proxy_ok", "INTEGER"),          # 1 работает, 0 нет, NULL не проверяли
+    ("accounts", "proxy_info", "TEXT"),           # «socks5, 120 мс» или текст ошибки
+    ("accounts", "proxy_checked_at", "REAL"),
+]
+
+
+def _migrate(c):
+    for table, col, typ in MIGRATIONS:
+        cols = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+        if col not in cols:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
 
 
 def q(sql, args=()):

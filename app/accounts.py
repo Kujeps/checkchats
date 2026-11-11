@@ -85,7 +85,11 @@ def proxy_label(raw) -> str:
         p = parse_proxy(raw)
     except ValueError:
         return "ошибка формата"
-    return f"{p['proxy_type']}://{p['addr']}:{p['port']}" if p else ""
+    if not p:
+        return ""
+    # Тип без явного указания — догадка; после проверки он допишется в строку
+    typed = not isinstance(raw, str) or "://" in raw or raw.strip()[:1] in "[{"
+    return f"{p['proxy_type']}://{p['addr']}:{p['port']}" if typed else f"{p['addr']}:{p['port']}"
 
 
 # ---------- импорт ----------
@@ -164,8 +168,21 @@ def import_files(files: dict) -> dict:
     return {"added": added, "updated": updated, "errors": errors}
 
 
-def assign_proxies(lines: list, overwrite=False) -> dict:
-    """Раздаёт прокси аккаунтам 1:1. Без overwrite — только тем, у кого прокси нет."""
+def proxy_key(raw):
+    """Один и тот же прокси может быть записан с типом и без — сравниваем по адресу и логину."""
+    try:
+        p = parse_proxy(raw)
+    except ValueError:
+        return raw
+    return (p["addr"], p["port"], p["username"]) if p else raw
+
+
+def assign_proxies(lines: list, mode="empty") -> dict:
+    """Раздаёт прокси аккаунтам 1:1.
+
+    mode: empty — только аккаунтам без прокси; broken — ещё и тем, чей прокси не прошёл проверку;
+    all — переназначить всем.
+    """
     proxies, bad = [], []
     for ln in lines:
         ln = ln.strip()
@@ -176,16 +193,29 @@ def assign_proxies(lines: list, overwrite=False) -> dict:
             proxies.append(ln)
         except ValueError as e:
             bad.append(str(e))
-    used = {r["proxy"] for r in db.all_("SELECT proxy FROM accounts WHERE proxy IS NOT NULL")}
-    if overwrite:
-        targets = db.all_("SELECT id FROM accounts ORDER BY id")
-        free = proxies
+    alive = "status NOT IN ('dead', 'frozen')"
+    if mode == "all":
+        targets = db.all_(f"SELECT id FROM accounts WHERE {alive} ORDER BY id")
+        keep = []
+    elif mode == "broken":
+        targets = db.all_(f"SELECT id FROM accounts WHERE {alive} AND (proxy IS NULL OR proxy='' OR proxy_ok=0) "
+                          "ORDER BY id")
+        keep = db.all_("SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy!='' "
+                       "AND (proxy_ok IS NULL OR proxy_ok=1)")
     else:
-        targets = db.all_("SELECT id FROM accounts WHERE proxy IS NULL OR proxy='' ORDER BY id")
-        free = [p for p in proxies if p not in used]
+        targets = db.all_(f"SELECT id FROM accounts WHERE {alive} AND (proxy IS NULL OR proxy='') ORDER BY id")
+        keep = db.all_("SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy!=''")
+    used = {proxy_key(r["proxy"]) for r in keep}
+    free, seen = [], set()
+    for p in proxies:
+        k = proxy_key(p)
+        if k not in used and k not in seen:
+            seen.add(k)
+            free.append(p)
     n = 0
     for acc, p in zip(targets, free):
-        db.q("UPDATE accounts SET proxy=? WHERE id=?", (p, acc["id"]))
+        db.q("UPDATE accounts SET proxy=?, proxy_ok=NULL, proxy_info=NULL, "
+             "status=CASE WHEN status='proxy_error' THEN 'new' ELSE status END WHERE id=?", (p, acc["id"]))
         n += 1
     return {"assigned": n, "valid": len(proxies), "bad": bad,
             "without_proxy": max(0, len(targets) - len(free))}
