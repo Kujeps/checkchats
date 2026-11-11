@@ -127,8 +127,13 @@ def save_check(chat, res, acc_id, s):
 
     has_text = sample["messages"] or sample["linked"] or res["title"]
     dead = metrics.get("verdict") == "dead"
-    if not s["llm_enabled"] or dead or not has_text:
+    if not s["llm_enabled"] or dead or not has_text or skip_as_spam(h_spam, s):
         finalize(chat["id"], None, s)
+
+
+def skip_as_spam(h_spam, s) -> bool:
+    """Бесплатная проверка уже уверена, что это спам — не тратим деньги на ИИ."""
+    return bool(s.get("llm_skip_spam")) and h_spam is not None and h_spam >= s["spam_threshold"]
 
 
 def finalize(chat_id, ai, s):
@@ -486,6 +491,10 @@ class Engine:
             row = db.one("SELECT * FROM chats WHERE llm_status='pending' AND status='checked' ORDER BY id LIMIT 1")
             if not row:
                 await asyncio.sleep(2)
+                continue
+            if skip_as_spam(row["h_spam"], s):
+                # уже стоял в очереди до включения настройки
+                finalize(row["id"], None, s)
                 continue
             if time.time() < self.llm_pause_until:
                 await asyncio.sleep(1)
