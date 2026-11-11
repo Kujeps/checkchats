@@ -67,15 +67,15 @@ def build_prompt(chat: dict, sample: dict, categories: list, target: str, msg_ch
     return "\n".join(lines)
 
 
-def _parse_json(text: str) -> dict:
+def _parse_json(text: str):
     text = (text or "").strip()
     text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.M).strip()
     try:
         return json.loads(text)
     except ValueError:
-        m = re.search(r"\{.*\}", text, re.S)
+        m = re.search(r"\{.*\}|\[.*\]", text, re.S)
         if not m:
-            raise ValueError("ИИ вернул не JSON")
+            raise ValueError(f"ИИ вернул не JSON: {text[:120]!r}")
         return json.loads(m.group(0))
 
 
@@ -114,6 +114,17 @@ def _error_text(payload) -> str:
 
 async def chat_json(client: httpx.AsyncClient, key: str, models, system: str, user: str,
                     max_tokens=600) -> tuple[dict, dict]:
+    content, usage = await chat_text(client, key, models, system, user, max_tokens)
+    res = _parse_json(content)
+    if isinstance(res, list):   # модель иногда отдаёт [ {...} ] вместо {...}
+        res = next((x for x in res if isinstance(x, dict)), {})
+    if not isinstance(res, dict):
+        raise ValueError("ИИ вернул не JSON-объект")
+    return res, usage
+
+
+async def chat_text(client: httpx.AsyncClient, key: str, models, system: str, user: str,
+                    max_tokens=600) -> tuple[str, dict]:
     models = [models] if isinstance(models, str) else list(models)
     body = {
         "model": models[0],
@@ -148,10 +159,14 @@ async def chat_json(client: httpx.AsyncClient, key: str, models, system: str, us
         raise Transient(f"OpenRouter {code}: {_error_text(data)}")
     if code >= 400:
         raise RuntimeError(f"OpenRouter {code}: {_error_text(data)}")
-    content = data["choices"][0]["message"].get("content") or ""
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if not choices:
+        raise Transient(f"OpenRouter вернул пустой ответ: {str(data)[:200]}")
+    content = (choices[0].get("message") or {}).get("content") or ""
     usage = data.get("usage") or {}
     usage["model"] = data.get("model")
-    return _parse_json(content), usage
+    usage["finish_reason"] = choices[0].get("finish_reason")
+    return content, usage
 
 
 async def analyze(client, key, models, chat, sample, categories, target, msg_chars, msg_limit) -> tuple[dict, dict]:
@@ -188,13 +203,33 @@ async def generate_queries(client, key, models, topics: str, cities: str, n: int
             f"Города/регионы (если пусто — без привязки): {cities or '-'}\n"
             f"Придумай {n} разных поисковых запросов на русском и английском, включая сленг "
             "(вб, озон, селлеры, риелторы, мастера и т.п.) и сочетания с городами.")
-    res, _ = await chat_json(client, key, models, system, user, max_tokens=2000)
+    content, _ = await chat_text(client, key, models, system, user, max_tokens=max(1500, n * 40))
     out = []
-    for x in res.get("queries") or []:
-        x = str(x).strip()
-        if x and x.lower() not in {o.lower() for o in out}:
-            out.append(x[:64])
+    for x in _queries_from(content):
+        x = re.sub(r"\s+", " ", str(x)).strip().strip("\"'«»")
+        if x and len(x) <= 64 and x.lower() not in {o.lower() for o in out}:
+            out.append(x)
+    if not out:
+        raise ValueError(f"ИИ не вернул ни одного запроса: {content[:150]!r}")
     return out
+
+
+def _queries_from(content: str) -> list:
+    """Список запросов из ответа в любом виде: {"queries": [...]}, [...], или обрезанный JSON."""
+    try:
+        res = _parse_json(content)
+        if isinstance(res, list):
+            return res
+        if isinstance(res, dict):
+            if isinstance(res.get("queries"), list):
+                return res["queries"]
+            # модель могла назвать ключ иначе — берём первый список
+            return next((v for v in res.values() if isinstance(v, list)), [])
+    except ValueError:
+        pass
+    # ответ обрезался по длине: достаём всё, что успело прийти в кавычках
+    items = re.findall(r'"((?:[^"\\]|\\.){1,64})"', content or "")
+    return [x for x in items if x.lower() not in ("queries", "query")]
 
 
 async def list_models(client) -> list:

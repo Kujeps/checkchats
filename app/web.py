@@ -2,12 +2,13 @@
 import asyncio
 import io
 import json
+import logging
 import time
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import accounts, db, export, llm, proxycheck
@@ -17,6 +18,14 @@ from .paths import STATIC_DIR
 
 app = FastAPI(title="CheckChats")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.exception_handler(Exception)
+async def unexpected_error(request: Request, exc: Exception):
+    # Вместо безликого «Internal Server Error» — текст ошибки в интерфейсе и трейс в журнале
+    logging.getLogger("web").exception("Ошибка в %s", request.url.path)
+    say(f"Ошибка в {request.url.path}: {type(exc).__name__}: {exc}", "error")
+    return JSONResponse({"detail": f"{type(exc).__name__}: {exc}"}, status_code=500)
 
 
 @app.middleware("http")
@@ -394,11 +403,24 @@ async def gen_queries(request: Request):
     s = db.get_settings()
     if not s["openrouter_key"]:
         raise HTTPException(400, "Не задан ключ OpenRouter")
+    try:
+        n = max(5, min(200, int(data.get("n") or 60)))
+    except ValueError:
+        n = 60
     async with httpx.AsyncClient() as c:
-        qs = await llm.generate_queries(c, s["openrouter_key"], llm.models_from(s),
-                                        data.get("topics") or s["target_description"], data.get("cities") or "",
-                                        int(data.get("n") or 60))
-    return {"queries": qs}
+        for attempt in range(3):
+            try:
+                qs = await llm.generate_queries(c, s["openrouter_key"], llm.models_from(s),
+                                                data.get("topics") or s["target_description"],
+                                                data.get("cities") or "", n)
+                return {"queries": qs}
+            except (llm.RateLimited, llm.Transient) as e:
+                # модель перегружена — подождём и попробуем ещё раз
+                if attempt == 2:
+                    raise HTTPException(503, f"Модель сейчас перегружена, попробуйте через минуту ({e})")
+                await asyncio.sleep(5 * (attempt + 1))
+            except (ValueError, RuntimeError) as e:
+                raise HTTPException(502, f"Не получилось сгенерировать: {e}")
 
 
 @app.post("/api/queries/clear")
