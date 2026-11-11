@@ -135,6 +135,8 @@ def import_files(files: dict) -> dict:
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"{stem}.session"
         path.write_bytes(content)
+        if stem in jsons:
+            (folder / f"{stem}.json").write_bytes(jsons[stem])
         proxy = params.pop("proxy", None)
         proxy_str = None
         if proxy:
@@ -187,6 +189,42 @@ def assign_proxies(lines: list, overwrite=False) -> dict:
         n += 1
     return {"assigned": n, "valid": len(proxies), "bad": bad,
             "without_proxy": max(0, len(targets) - len(free))}
+
+
+def scan_folder() -> dict:
+    """Подхватывает .session (+ .json рядом), положенные в data/accounts вручную.
+
+    Каждый новый аккаунт переносится в свою подпапку data/accounts/<имя>/, как при загрузке.
+    """
+    known = {r["name"] for r in db.all_("SELECT name FROM accounts")}
+    found = {}
+    for path in ACCOUNTS_DIR.rglob("*.session"):
+        stem = path.stem
+        if stem in known or stem in found or path.name.startswith("._"):
+            continue
+        found[stem] = path
+    if not found:
+        return {"added": [], "updated": [], "errors": []}
+
+    files = {}
+    for stem, path in found.items():
+        files[path.name] = path.read_bytes()
+        js = path.with_suffix(".json")
+        if js.exists():
+            files[js.name] = js.read_bytes()
+    res = import_files(files)
+
+    # Убираем исходники, если они лежали не там, куда их положил импорт
+    for stem in res["added"]:
+        src = found[stem]
+        dest = ACCOUNTS_DIR / stem / f"{stem}.session"
+        if src.resolve() != dest.resolve():
+            for p in (src, src.with_suffix(".json"), Path(str(src) + "-journal")):
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
+    return res
 
 
 def delete_account(acc_id: int):

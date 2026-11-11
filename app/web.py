@@ -2,6 +2,7 @@
 import asyncio
 import io
 import json
+import time
 from pathlib import Path
 
 import httpx
@@ -40,6 +41,7 @@ async def status():
 
 @app.post("/api/start")
 async def start():
+    scan_accounts_folder(force=True)
     await engine.start()
     return {"ok": True}
 
@@ -108,13 +110,31 @@ async def llm_test():
 
 # ---------- аккаунты ----------
 
+_last_scan = 0.0
+
+
+def scan_accounts_folder(force=False):
+    """Находит аккаунты, скопированные в data/accounts вручную (не чаще раза в 5 секунд)."""
+    global _last_scan
+    if not force and time.time() - _last_scan < 5:
+        return
+    _last_scan = time.time()
+    res = accounts.scan_folder()
+    if res["added"]:
+        say(f"Найдено в папке accounts: {len(res['added'])} новых аккаунтов")
+    for e in res["errors"]:
+        say(f"Папка accounts: {e}", "warn")
+
+
 @app.get("/api/accounts")
 async def list_accounts():
+    scan_accounts_folder()
     rows = db.all_("SELECT id, name, proxy, status, flood_until, day, resolves_today, searches_today, joins_today, "
                    "checked_total, me, last_error FROM accounts ORDER BY id")
     today = db.today()
     for r in rows:
-        r["proxy_label"] = accounts.proxy_label(r.pop("proxy")) if r.get("proxy") else ""
+        proxy = r.pop("proxy")
+        r["proxy_label"] = accounts.proxy_label(proxy) if proxy else ""
         if r["day"] != today:
             r["resolves_today"] = r["searches_today"] = r["joins_today"] = 0
         w = engine.workers.get(r["id"])
