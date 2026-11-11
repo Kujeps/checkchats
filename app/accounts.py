@@ -267,7 +267,15 @@ def delete_account(acc_id: int):
         shutil.rmtree(folder, ignore_errors=True)
 
 
-def make_client(acc: dict) -> TelegramClient:
+def effective_proxy(acc: dict, s: dict):
+    """Через какой прокси подключать аккаунт: (строка | None, общий ли это прокси)."""
+    g = (s.get("global_proxy") or "").strip()
+    if g and (s.get("global_proxy_all") or not acc.get("proxy")):
+        return g, True
+    return acc.get("proxy") or None, False
+
+
+def make_client(acc: dict, proxy=None) -> TelegramClient:
     p = dict(DEFAULT_PARAMS)
     p.update(json.loads(acc["params"] or "{}"))
     session = acc["session_path"][:-len(".session")]
@@ -280,7 +288,7 @@ def make_client(acc: dict) -> TelegramClient:
         app_version=str(p["app_version"]).strip(),
         lang_code=p["lang_pack"],
         system_lang_code=p["system_lang_pack"],
-        proxy=parse_proxy(acc["proxy"]) if acc.get("proxy") else None,
+        proxy=parse_proxy(proxy) if proxy else None,
         connection_retries=2,
         retry_delay=2,
         timeout=20,

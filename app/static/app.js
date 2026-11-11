@@ -53,7 +53,7 @@ $$("nav button").forEach((b) => b.addEventListener("click", () => {
 
 function refreshTab() {
   if (currentTab === "chats") loadChats();
-  if (currentTab === "accounts") loadAccounts();
+  if (currentTab === "accounts") loadGlobalProxy(true).then(loadAccounts);
   if (currentTab === "search") loadQueries();
   if (currentTab === "settings") loadSettings();
 }
@@ -195,6 +195,43 @@ $$("[data-clear]").forEach((b) => b.addEventListener("click", run(async () => {
 })));
 
 // ---------- аккаунты ----------
+let globalProxy = { proxy: "", all: true, check: null };
+
+function globalCheckText(c) {
+  if (!c) return "не проверен";
+  return c.ok ? `✓ работает: ${esc(c.type)}, ${c.ms} мс` : `✗ не работает: ${esc(c.error)}`;
+}
+function globalProxyCell() {
+  const c = globalProxy.check;
+  return `общий<div class="sub ${c ? (c.ok ? "ok-text" : "danger-text") : ""}">${globalCheckText(c)}</div>`;
+}
+function renderGlobalProxy() {
+  const c = globalProxy.check;
+  $("#globalProxyResult").innerHTML = globalProxy.proxy
+    ? `<span class="${c ? (c.ok ? "ok-text" : "danger-text") : "muted"}">${globalCheckText(c)}</span>`
+    : '<span class="muted">Общий прокси не задан</span>';
+}
+async function loadGlobalProxy(fillInput = false) {
+  globalProxy = await api("/api/proxy/global");
+  if (fillInput && document.activeElement !== $("#globalProxy")) {
+    $("#globalProxy").value = globalProxy.proxy;
+    $("#globalProxyAll").checked = globalProxy.all;
+  }
+  renderGlobalProxy();
+}
+
+$("#btnGlobalProxy").addEventListener("click", run(async () => {
+  const btn = $("#btnGlobalProxy");
+  btn.disabled = true;
+  $("#globalProxyResult").textContent = "Проверяю…";
+  try {
+    const r = await api("/api/proxy/global", { json: { proxy: $("#globalProxy").value, all: $("#globalProxyAll").checked } });
+    $("#globalProxy").value = r.proxy;   // с дописанным типом, если он определился
+  } finally { btn.disabled = false; }
+  await loadGlobalProxy();
+  loadAccounts();
+}));
+
 async function loadAccounts() {
   if (!settings) settings = await api("/api/settings");
   const rows = await api("/api/accounts");
@@ -205,8 +242,8 @@ async function loadAccounts() {
       extra = " до " + new Date(a.flood_until * 1000).toLocaleTimeString("ru-RU");
     return `<tr data-id="${a.id}">
       <td><b>${esc(a.name)}</b><div class="sub">${esc(a.me || "")}</div></td>
-      <td>${a.proxy_label ? esc(a.proxy_label) : '<span class="danger-text">нет</span>'}
-        <button class="ghost small" data-act="proxy">изменить</button>
+      <td>${a.uses_global ? globalProxyCell() : a.proxy_label ? esc(a.proxy_label) : '<span class="danger-text">нет</span>'}
+        ${a.uses_global ? "" : '<button class="ghost small" data-act="proxy">изменить</button>'}
         ${a.proxy_label ? `<div class="sub ${a.proxy_ok === 1 ? "ok-text" : a.proxy_ok === 0 ? "danger-text" : ""}">${
           a.proxy_ok === 1 ? "✓ " + esc(a.proxy_info) : a.proxy_ok === 0 ? "✗ " + esc(a.proxy_info) : "не проверен"}</div>` : ""}</td>
       <td class="st-${st}">${ACC_STATUS[st] || st}${extra}</td>
@@ -265,11 +302,18 @@ $("#btnCheckProxyList").addEventListener("click", run(async () => {
 $("#btnCheckProxies").addEventListener("click", run(async () => {
   const btn = $("#btnCheckProxies");
   btn.disabled = true;
-  $("#netResult").textContent = "Проверяю прокси аккаунтов…";
+  $("#netResult").textContent = "Проверяю прокси…";
   try {
+    let text = "";
+    if (globalProxy.proxy) {
+      const g = await api("/api/proxy/global", { json: { proxy: globalProxy.proxy, all: globalProxy.all } });
+      await loadGlobalProxy();
+      text += `Общий прокси: <span class="${g.check.ok ? "ok-text" : "danger-text"}">${globalCheckText(g.check)}</span>. `;
+    }
     const r = await api("/api/accounts/check_proxies", { json: {} });
-    $("#netResult").innerHTML = `Прокси: рабочих <span class="ok-text">${r.ok}</span>, нерабочих <span class="danger-text">${r.bad}</span>` +
-      (r.bad ? ". Нерабочие можно заменить: вставьте новые прокси выше и выберите «без прокси и с нерабочим»." : "");
+    if (r.ok + r.bad)
+      text += `Отдельные прокси: рабочих <span class="ok-text">${r.ok}</span>, нерабочих <span class="danger-text">${r.bad}</span>`;
+    $("#netResult").innerHTML = text || "Прокси не заданы.";
   } finally { btn.disabled = false; }
   loadAccounts();
 }));

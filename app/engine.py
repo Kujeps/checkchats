@@ -11,7 +11,7 @@ import httpx
 from telethon import errors
 
 from . import db, heuristics, llm, proxycheck
-from .accounts import make_client
+from .accounts import effective_proxy, make_client
 from .checker import Checker, ChatGone, NeedResolve
 from .proxycheck import net_error_text
 
@@ -39,6 +39,28 @@ async def check_account_proxy(acc) -> dict:
     if r["ok"] and acc["status"] == "proxy_error":
         db.q("UPDATE accounts SET status='new', last_error=NULL WHERE id=?", (acc["id"],))
     return r
+
+
+GLOBAL_PROXY = {"raw": None, "t": 0.0, "r": None}
+_global_lock = asyncio.Lock()
+
+
+async def check_global_proxy(force=False) -> dict:
+    """Проверяет общий прокси. Результат кэшируется на минуту: аккаунтов много, прокси один."""
+    async with _global_lock:
+        raw = (db.get_settings().get("global_proxy") or "").strip()
+        c = GLOBAL_PROXY
+        if not force and c["raw"] == raw and c["r"] and time.time() - c["t"] < 60:
+            return c["r"]
+        r = await proxycheck.check(raw)
+        if r["ok"] and r["fixed"] != raw:
+            db.save_settings({"global_proxy": r["fixed"]})   # дописываем найденный тип
+            raw = r["fixed"]
+        c.update(raw=raw, t=time.time(), r=r)
+        if r["ok"]:
+            # аккаунты, упавшие из-за прокси, снова можно запускать
+            db.q("UPDATE accounts SET status='new', last_error=NULL WHERE status='proxy_error'")
+        return r
 
 
 def _seconds_to_midnight():
@@ -178,15 +200,18 @@ class Worker:
 
     async def connect(self):
         acc = db.one("SELECT * FROM accounts WHERE id=?", (self.acc_id,))
-        if acc["proxy"]:
+        proxy, is_global = effective_proxy(acc, db.get_settings())
+        if proxy:
             # Сначала быстро проверяем прокси, чтобы не мучить Telegram заведомо мёртвым соединением
-            r = await check_account_proxy(acc)
+            r = await (check_global_proxy() if is_global else check_account_proxy(acc))
             if not r["ok"]:
-                self._set("proxy_error", f"прокси: {r['error']}")
+                self._set("proxy_error", f"{'общий прокси' if is_global else 'прокси'}: {r['error']}")
                 return False
+            # после проверки в строке прокси может появиться найденный тип
             acc = db.one("SELECT * FROM accounts WHERE id=?", (self.acc_id,))
+            proxy, is_global = effective_proxy(acc, db.get_settings())
         try:
-            self.client = make_client(acc)
+            self.client = make_client(acc, proxy)
         except Exception as e:  # noqa: BLE001
             self._set("dead", f"файл сессии повреждён: {type(e).__name__}: {e}")
             return False
@@ -207,7 +232,8 @@ class Worker:
         except errors.FloodWaitError as e:
             self._set("flood", f"FloodWait {e.seconds} c", flood_until=time.time() + e.seconds)
         except NET_ERRORS as e:
-            via = "через прокси" if acc["proxy"] else "напрямую (Telegram может быть заблокирован)"
+            via = ("через общий прокси" if is_global else "через прокси") if proxy \
+                else "напрямую (Telegram может быть заблокирован)"
             self._set("proxy_error", f"нет связи с Telegram {via}: {net_error_text(e)}")
         except Exception as e:  # noqa: BLE001 — показываем любую ошибку в интерфейсе
             self._set("proxy_error", f"{type(e).__name__}: {e}")
@@ -392,14 +418,27 @@ class Engine:
                  "AND sample IS NOT NULL AND (llm_error LIKE '%429%' OR llm_error LIKE '%rate-limit%')").rowcount
         if n:
             say(f"{n} чатов с ошибкой 429 возвращены в очередь ИИ")
-        cond = "status NOT IN ('dead', 'frozen', 'disabled')"
-        if not self.s["allow_no_proxy"]:
-            cond += " AND proxy IS NOT NULL AND proxy != ''"
-        accs = db.all_(f"SELECT * FROM accounts WHERE {cond} ORDER BY id")
-        skipped = db.one("SELECT COUNT(*) n FROM accounts WHERE status NOT IN ('dead','frozen','disabled') "
-                         "AND (proxy IS NULL OR proxy='')")["n"]
-        if skipped and not self.s["allow_no_proxy"]:
-            say(f"{skipped} акк. без прокси пропущено (включите в настройках, если нужно)", "warn")
+        global_ok = False
+        if (self.s["global_proxy"] or "").strip():
+            r = await check_global_proxy(force=True)
+            global_ok = r["ok"]
+            if global_ok:
+                say(f"Общий прокси работает: {r['type']}, {r['ms']} мс")
+            else:
+                say(f"Общий прокси не работает: {r['error']}. Аккаунты, которые через него идут, не запущены",
+                    "error")
+        accs, no_proxy, bad_global = [], 0, 0
+        for acc in db.all_("SELECT * FROM accounts WHERE status NOT IN ('dead', 'frozen', 'disabled') ORDER BY id"):
+            proxy, is_global = effective_proxy(acc, self.s)
+            if is_global and not global_ok:
+                bad_global += 1
+            elif not proxy and not self.s["allow_no_proxy"]:
+                no_proxy += 1
+            else:
+                accs.append(acc)
+        if no_proxy:
+            say(f"{no_proxy} акк. без прокси пропущено: задайте общий прокси на вкладке «Аккаунты» "
+                "или разрешите работу без прокси в настройках", "warn")
         say(f"Старт: аккаунтов {len(accs)}")
         for i, acc in enumerate(accs):
             w = Worker(self, acc)
@@ -502,8 +541,9 @@ class Engine:
             async def one(acc):
                 if acc["id"] in self.workers:
                     return
-                if not acc["proxy"] and not s["allow_no_proxy"]:
-                    db.q("UPDATE accounts SET last_error=? WHERE id=?", ("нет прокси", acc["id"]))
+                if not effective_proxy(acc, s)[0] and not s["allow_no_proxy"]:
+                    db.q("UPDATE accounts SET last_error=? WHERE id=?",
+                         ("нет прокси: задайте общий прокси или разрешите работу без прокси", acc["id"]))
                     return
                 async with sem:
                     w = Worker(self, acc)

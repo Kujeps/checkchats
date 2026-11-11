@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import accounts, db, export, llm, proxycheck
-from .engine import LOG, check_account_proxy, engine, say
+from .engine import GLOBAL_PROXY, LOG, check_account_proxy, check_global_proxy, engine, say
 from .links import parse_link
 from .paths import STATIC_DIR
 
@@ -132,9 +132,11 @@ async def list_accounts():
     rows = db.all_("SELECT id, name, proxy, status, flood_until, day, resolves_today, searches_today, joins_today, "
                    "checked_total, me, last_error, proxy_ok, proxy_info FROM accounts ORDER BY id")
     today = db.today()
+    s = db.get_settings()
     for r in rows:
-        proxy = r.pop("proxy")
-        r["proxy_label"] = accounts.proxy_label(proxy) if proxy else ""
+        own = r.pop("proxy")
+        _, r["uses_global"] = accounts.effective_proxy({"proxy": own}, s)
+        r["proxy_label"] = accounts.proxy_label(own) if own and not r["uses_global"] else ""
         if r["day"] != today:
             r["resolves_today"] = r["searches_today"] = r["joins_today"] = 0
         w = engine.workers.get(r["id"])
@@ -163,9 +165,42 @@ async def check_proxy_list(request: Request):
     return await proxycheck.check_many(lines)
 
 
+@app.get("/api/proxy/global")
+async def global_proxy_state():
+    s = db.get_settings()
+    r = GLOBAL_PROXY["r"] if GLOBAL_PROXY["raw"] == s["global_proxy"] else None
+    return {"proxy": s["global_proxy"], "all": s["global_proxy_all"], "check": r,
+            "checked_at": GLOBAL_PROXY["t"] if r else None}
+
+
+@app.post("/api/proxy/global")
+async def set_global_proxy(request: Request):
+    """Сохраняет общий прокси и сразу проверяет его (пустая строка — убрать)."""
+    data = await request.json()
+    raw = (data.get("proxy") or "").strip()
+    if raw:
+        try:
+            accounts.parse_proxy(raw)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    db.save_settings({"global_proxy": raw, "global_proxy_all": bool(data.get("all", True))})
+    if not raw:
+        say("Общий прокси убран")
+        return {"proxy": "", "check": None}
+    r = await check_global_proxy(force=True)
+    say(f"Общий прокси: {'работает, ' + r['type'] + ', ' + str(r['ms']) + ' мс' if r['ok'] else 'не работает — ' + r['error']}",
+        "info" if r["ok"] else "warn")
+    if engine.running:
+        say("Новый прокси применится к аккаунтам после перезапуска (Остановить → Запустить)", "warn")
+    return {"proxy": db.get_settings()["global_proxy"], "check": r}
+
+
 @app.post("/api/accounts/check_proxies")
 async def check_account_proxies():
-    rows = db.all_("SELECT * FROM accounts WHERE proxy IS NOT NULL AND proxy!='' AND status NOT IN ('dead','frozen')")
+    s = db.get_settings()
+    rows = [a for a in db.all_("SELECT * FROM accounts WHERE proxy IS NOT NULL AND proxy!='' "
+                               "AND status NOT IN ('dead','frozen')")
+            if not accounts.effective_proxy(a, s)[1]]
     sem = asyncio.Semaphore(30)
 
     async def one(acc):

@@ -82,6 +82,8 @@ td .sub { color: var(--muted); font-size: 12px; max-width: 420px; }
 .log .warn { color: var(--low); } .log .error { color: var(--danger); }
 .st-active, .st-working { color: var(--live); } .st-flood, .st-limit { color: var(--low); }
 .st-dead, .st-frozen, .st-proxy_error { color: var(--danger); } .st-new, .st-disabled, .st-idle { color: var(--muted); }
+details.sub-block { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+details.sub-block summary { cursor: pointer; color: var(--muted); }
 .sticky { position: sticky; bottom: 0; background: var(--bg); padding: 10px 0; }
 pre { background: var(--bg); padding: 10px; border-radius: 8px; overflow: auto; white-space: pre-wrap; }
 code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }

@@ -124,6 +124,8 @@ DEFAULTS = {
     "search_limit": 40,            # поисковых запросов в сутки на аккаунт
     "max_flood_sleep": 60,         # FloodWait меньше этого просто пережидаем
     "allow_no_proxy": False,       # запускать аккаунты без прокси (с IP этого компьютера)
+    "global_proxy": "",            # общий прокси для всей программы
+    "global_proxy_all": True,      # общий прокси и для тех, у кого есть свой
     "snowball": True,              # добавлять чаты из ссылок и репостов
     "snowball_depth": 2,
     "snowball_only_target": True,  # брать ссылки только из целевых живых чатов
