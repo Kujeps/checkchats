@@ -351,16 +351,17 @@ $("#btnCheckAcc").addEventListener("click", run(async () => {
 async function loadQueries() {
   const rows = await api("/api/queries");
   const st = { pending: "в очереди", running: "ищется", done: "готово", error: "ошибка" };
-  $("#qTable tbody").innerHTML = rows.map((q) => `<tr><td>${esc(q.q)}</td><td>${st[q.status] || q.status}</td>
+  const kinds = { both: "названия и сообщения", messages: "сообщения", title: "названия" };
+  $("#qTable tbody").innerHTML = rows.map((q) => `<tr><td>${esc(q.q)}</td><td>${kinds[q.kind] || "названия"}</td><td>${st[q.status] || q.status}</td>
     <td class="num">${q.status === "done" ? fmt(q.found) : ""}</td><td class="sub">${esc(q.error || "")}</td></tr>`).join("")
-    || `<tr><td colspan="4" class="muted">Запросов нет</td></tr>`;
+    || `<tr><td colspan="5" class="muted">Запросов нет</td></tr>`;
   if (!$("#genTopics").value) {
     if (!settings) settings = await api("/api/settings");
     $("#genTopics").value = settings.target_description;
   }
 }
 $("#btnAddQueries").addEventListener("click", run(async () => {
-  const r = await api("/api/queries", { json: { text: $("#queriesText").value } });
+  const r = await api("/api/queries", { json: { text: $("#queriesText").value, kind: $("#queryKind").value } });
   $("#qResult").textContent = `Добавлено ${r.added}`;
   $("#queriesText").value = "";
   loadQueries();

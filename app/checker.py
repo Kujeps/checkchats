@@ -1,10 +1,14 @@
 """Проверка одного чата через Telegram: метаданные, последние сообщения, ссылки на другие чаты."""
+from collections import Counter
+from datetime import datetime, timedelta, timezone
+
 from telethon import errors, utils
-from telethon.tl.functions.channels import GetFullChannelRequest
+from telethon.tl.functions.channels import GetChannelRecommendationsRequest, GetFullChannelRequest
 from telethon.tl.functions.contacts import ResolveUsernameRequest, SearchRequest
-from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
-from telethon.tl.types import (Channel, ChatInvite, ChatInviteAlready, ChatInvitePeek, InputPeerChannel,
-                               MessageEntityTextUrl, MessageEntityUrl, MessageService, PeerUser, User)
+from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest, SearchGlobalRequest
+from telethon.tl.types import (Channel, ChatInvite, ChatInviteAlready, ChatInvitePeek, InputMessagesFilterEmpty,
+                               InputPeerChannel, InputPeerEmpty, MessageEntityTextUrl, MessageEntityUrl,
+                               MessageService, PeerUser, User)
 
 from .links import extract_links
 
@@ -112,7 +116,8 @@ class Checker:
             raise ChatGone("not_chat", "это пользователь или бот, а не чат")
         return utils.get_input_peer(ent), True
 
-    async def check(self, chat: dict, messages_limit: int, join_private: bool, leave_after_join: bool):
+    async def check(self, chat: dict, messages_limit: int, join_private: bool, leave_after_join: bool,
+                    similar: bool = False):
         joined = None
         if chat["kind"] == "invite":
             peer, meta = await self._by_invite(chat["value"], join_private)
@@ -123,7 +128,7 @@ class Checker:
             peer, _ = await self._peer_by_username(chat["value"])
 
         try:
-            return await self._read(peer, messages_limit)
+            return await self._read(peer, messages_limit, similar)
         finally:
             if joined is not None and leave_after_join:
                 try:
@@ -167,7 +172,7 @@ class Checker:
             "found": [],
         }
 
-    async def _read(self, peer, messages_limit):
+    async def _read(self, peer, messages_limit, similar=False):
         if not isinstance(peer, InputPeerChannel):
             raise ChatGone("not_chat", "не канал и не супергруппа")
         try:
@@ -196,6 +201,7 @@ class Checker:
 
         username = _username(ent)
         return {
+            "similar": await self._similar(peer) if similar and ctype == "channel" else [],
             "status": "checked",
             "tg_id": ent.id,
             "type": ctype,
@@ -208,6 +214,54 @@ class Checker:
             "linked": linked,
             "found": _found_links(raw, username),
         }
+
+    async def _similar(self, peer) -> list:
+        """Похожие каналы по рекомендациям Telegram. Ошибки здесь не мешают проверке самого канала."""
+        try:
+            res = await self.client(GetChannelRecommendationsRequest(channel=utils.get_input_channel(peer)))
+        except (errors.FloodWaitError, errors.RPCError):
+            return []
+        own = peer.channel_id
+        return list(dict.fromkeys(u.lower() for c in res.chats
+                                  if isinstance(c, Channel) and c.id != own and (u := _username(c))))[:30]
+
+    async def search_messages(self, query: str, days: int, pages: int, take_budget) -> tuple[list, int]:
+        """Глобальный поиск по сообщениям в публичных группах за последние days дней.
+
+        Находит чаты, где люди прямо сейчас пишут об этом. Возвращает (usernames по числу совпадений,
+        сколько страниц запрошено). take_budget() списывает один запрос из лимита или говорит, что его нет.
+        """
+        hits = Counter()
+        rate, offset_peer, offset_id = 0, InputPeerEmpty(), 0
+        min_date = datetime.now(timezone.utc) - timedelta(days=days)
+        used = 0
+        for _ in range(max(1, pages)):
+            if not take_budget():
+                break
+            try:
+                res = await self.client(SearchGlobalRequest(
+                    q=query, filter=InputMessagesFilterEmpty(), min_date=min_date, max_date=None,
+                    offset_rate=rate, offset_peer=offset_peer, offset_id=offset_id, limit=100, groups_only=True))
+            except errors.FloodWaitError:
+                if used:
+                    break            # уже что-то нашли — отдадим это, а FloodWait поймаем в следующий раз
+                raise
+            used += 1
+            chats = {c.id: c for c in res.chats}
+            for m in res.messages:
+                c = chats.get(getattr(m.peer_id, "channel_id", None))
+                u = _username(c) if c is not None else None
+                if isinstance(c, Channel) and not c.broadcast and u:
+                    hits[u.lower()] += 1
+            next_rate = getattr(res, "next_rate", None)
+            if not res.messages or not next_rate:
+                break
+            last = res.messages[-1]
+            last_chat = chats.get(getattr(last.peer_id, "channel_id", None))
+            if last_chat is None:
+                break
+            rate, offset_peer, offset_id = next_rate, utils.get_input_peer(last_chat), last.id
+        return [u for u, _ in hits.most_common()], used
 
     async def search(self, query: str):
         res = await self.client(SearchRequest(q=query, limit=100))

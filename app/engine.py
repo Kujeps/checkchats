@@ -102,6 +102,7 @@ def _sample(res, metrics, s):
         "metrics": {k: metrics.get(k) for k in ("msgs_per_day", "unique_authors", "dup_ratio",
                                                 "human_share", "dialog_ratio")},
         "found": res.get("found") or [],
+        "similar": res.get("similar") or [],
         "invite_only": res["status"] == "private",
     }
 
@@ -160,15 +161,19 @@ def finalize(chat_id, ai, s):
           (ai or {}).get("summary"), (ai or {}).get("language"), (ai or {}).get("live"), (ai or {}).get("spam"),
           live, spam, verdict, is_target, row["sample"] if s["keep_sample"] else None, chat_id))
 
-    # «Снежный ком»: ссылки из подходящих чатов идут в очередь
-    found = sample.get("found") or []
-    if (s["snowball"] and found and row["depth"] < s["snowball_depth"] and verdict in ("live", "low")
+    # «Снежный ком»: ссылки, репосты и похожие каналы из подходящих чатов идут в очередь.
+    # Проверять их будет тот же аккаунт — они уже в его кэше и не тратят лимит.
+    if (s["snowball"] and row["depth"] < s["snowball_depth"] and verdict in ("live", "low")
             and (is_target or not s["snowball_only_target"])):
         title = row["title"] or row["value"]
-        n = db.add_chats([tuple(x) for x in found], source=f"snowball:{title}"[:120],
-                         depth=row["depth"] + 1)
-        if n:
-            say(f"+{n} новых чатов из ссылок в «{title}»")
+        found = [tuple(x) for x in sample.get("found") or []]
+        similar = [("username", u) for u in sample.get("similar") or []]
+        n1 = db.add_chats(found, source=f"snowball:{title}"[:120], depth=row["depth"] + 1,
+                          preferred_account=row["checked_by"]) if found else 0
+        n2 = db.add_chats(similar, source=f"similar:{title}"[:120], depth=row["depth"] + 1,
+                          preferred_account=row["checked_by"]) if similar else 0
+        if n1 or n2:
+            say(f"+{n1 + n2} новых чатов из «{title}» (ссылки и репосты: {n1}, похожие каналы: {n2})")
 
 
 # ---------- очередь аккаунтов ----------
@@ -250,6 +255,19 @@ class Worker:
 
     def use_join(self):
         db.q("UPDATE accounts SET joins_today=joins_today+1 WHERE id=?", (self.acc_id,))
+
+    def can_search(self):
+        return self._acc()["searches_today"] < self.engine.s["search_limit"]
+
+    def use_search(self):
+        db.q("UPDATE accounts SET searches_today=searches_today+1 WHERE id=?", (self.acc_id,))
+
+    def take_search(self) -> bool:
+        """Списать один поисковый запрос из дневного лимита, если он ещё есть."""
+        if not self.can_search():
+            return False
+        self.use_search()
+        return True
 
     def _set(self, status, error=None, **extra):
         sets = ["status=?", "last_error=?"] + [f"{k}=?" for k in extra]
@@ -403,7 +421,8 @@ class Worker:
     async def _check(self, checker, chat, s):
         """True — продолжаем, False — аккаунт больше не работает."""
         try:
-            res = await checker.check(chat, s["messages_limit"], s["join_private"], s["leave_after_join"])
+            res = await checker.check(chat, s["messages_limit"], s["join_private"], s["leave_after_join"],
+                                      similar=s["similar_channels"] and s["snowball"])
             if res["status"] == "private" and not res.get("title"):
                 raise ChatGone("private", "нет доступа")
             save_check(chat, res, self.acc_id, s)
@@ -451,29 +470,51 @@ class Worker:
             return True
 
     async def _maybe_search(self, checker, s):
-        if time.time() - self.last_search < 60:
-            return False
-        if self._acc()["searches_today"] >= s["search_limit"]:
+        if time.time() - self.last_search < 60 or not self.can_search():
             return False
         qrow = db.one("SELECT * FROM queries WHERE status='pending' ORDER BY id LIMIT 1")
         if not qrow:
             return False
         db.q("UPDATE queries SET status='running' WHERE id=?", (qrow["id"],))
         self.last_search = time.time()
-        db.q("UPDATE accounts SET searches_today=searches_today+1 WHERE id=?", (self.acc_id,))
         self.state = "search"
+        kind = qrow.get("kind") or "title"
+        q = qrow["q"]
+        names, parts = [], []
         try:
-            names = await checker.search(qrow["q"])
-            n = db.add_chats([("username", u) for u in names], source=f"search:{qrow['q']}"[:120],
+            if kind in ("title", "both"):
+                self.use_search()
+                found = await checker.search(q)
+                names += found
+                parts.append(f"в названиях {len(found)}")
+            if kind in ("messages", "both") and self.can_search():
+                found, _ = await checker.search_messages(q, s["msg_search_days"], s["msg_search_pages"],
+                                                         self.take_search)
+                names += found
+                parts.append(f"в сообщениях {len(found)}")
+            names = list(dict.fromkeys(names))
+            n = db.add_chats([("username", u) for u in names], source=f"search:{q}"[:120],
                              preferred_account=self.acc_id)
-            db.q("UPDATE queries SET status='done', found=?, done_at=? WHERE id=?", (n, db.now(), qrow["id"]))
-            say(f"[{self.name}] поиск «{qrow['q']}»: найдено {len(names)}, новых {n}")
+            if kind == "both" and len(parts) == 1:
+                # на поиск по сообщениям у аккаунта не хватило лимита — оставим эту часть другому
+                db.q("UPDATE queries SET status='pending', kind='messages', found=found+? WHERE id=?",
+                     (n, qrow["id"]))
+                say(f"[{self.name}] поиск «{q}»: в названиях {len(names)}, новых {n}; "
+                    "поиск по сообщениям — другим аккаунтом (лимит исчерпан)")
+            else:
+                db.q("UPDATE queries SET status='done', found=found+?, done_at=? WHERE id=?",
+                     (n, db.now(), qrow["id"]))
+                say(f"[{self.name}] поиск «{q}»: найдено {', '.join(parts)}, новых {n}")
         except errors.FloodWaitError as e:
+            if names:
+                # часть уже нашли (например, по названиям) — не теряем её
+                db.add_chats([("username", u) for u in names], source=f"search:{q}"[:120],
+                             preferred_account=self.acc_id)
             db.q("UPDATE queries SET status='pending' WHERE id=?", (qrow["id"],))
             await self._flood(e.seconds, s)
         except Exception as e:  # noqa: BLE001
             db.q("UPDATE queries SET status='error', error=? WHERE id=?", (f"{type(e).__name__}: {e}"[:300], qrow["id"]))
-            say(f"[{self.name}] поиск «{qrow['q']}»: {type(e).__name__}: {e}", "warn")
+            say(f"[{self.name}] поиск «{q}»: {type(e).__name__}: {e}", "warn")
         return True
 
 

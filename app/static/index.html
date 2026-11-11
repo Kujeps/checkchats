@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CheckChats</title>
-<link rel="stylesheet" href="/static/style.css?v=1.0.7">
+<link rel="stylesheet" href="/static/style.css?v=1.0.8">
 </head>
 <body>
 <header>
@@ -170,9 +170,16 @@
   <div class="grid2">
     <div class="panel">
       <h3>Поисковые запросы</h3>
-      <p class="muted small">Аккаунты ищут публичные чаты по этим словам через поиск Telegram (каждый запрос даёт до ~10–20 чатов). Найденное попадает в очередь проверки.</p>
+      <p class="muted small">Аккаунты ищут публичные чаты через поиск Telegram. <b>В названиях</b> — чаты, в названии которых есть эти слова (обычно 10–20 штук). <b>В сообщениях</b> — группы, где люди писали это за последние дни: так находятся именно живые чаты, и их больше. Найденное попадает в очередь проверки.</p>
       <textarea id="queriesText" rows="8" placeholder="селлеры wb&#10;озон продавцы&#10;риелторы москва"></textarea>
-      <div class="row"><button id="btnAddQueries" class="primary">Добавить запросы</button><span id="qResult" class="muted"></span></div>
+      <div class="row">
+        <select id="queryKind">
+          <option value="both">искать в названиях и в сообщениях</option>
+          <option value="messages">только в сообщениях</option>
+          <option value="title">только в названиях чатов</option>
+        </select>
+        <button id="btnAddQueries" class="primary">Добавить запросы</button><span id="qResult" class="muted"></span>
+      </div>
     </div>
     <div class="panel">
       <h3>Сгенерировать запросы через ИИ</h3>
@@ -187,7 +194,7 @@
     <div class="row"><h3 class="grow">Очередь запросов</h3>
       <button data-qclear="errors">Повторить ошибки</button>
       <button data-qclear="all" class="ghost danger-text">Очистить</button></div>
-    <div class="table-wrap"><table id="qTable"><thead><tr><th>Запрос</th><th>Статус</th><th class="num">Новых чатов</th><th>Ошибка</th></tr></thead><tbody></tbody></table></div>
+    <div class="table-wrap"><table id="qTable"><thead><tr><th>Запрос</th><th>Где искать</th><th>Статус</th><th class="num">Новых чатов</th><th>Ошибка</th></tr></thead><tbody></tbody></table></div>
   </div>
 </section>
 
@@ -232,6 +239,8 @@
         <label>Читать сообщений<input type="number" name="messages_limit" min="20" max="500"></label>
         <label>Пауза от, сек<input type="number" name="delay_min" min="0" step="0.5"></label>
         <label>Пауза до, сек<input type="number" name="delay_max" min="0" step="0.5"></label>
+        <label>Поиск по сообщениям: за сколько дней<input type="number" name="msg_search_days" min="1" max="365"></label>
+        <label>Поиск по сообщениям: страниц на запрос (по 100 сообщ.)<input type="number" name="msg_search_pages" min="1" max="20"></label>
         <label>Одновременно работающих аккаунтов (0 — все)<input type="number" name="max_active_accounts" min="0"></label>
         <label>Поисков username в сутки на аккаунт<input type="number" name="resolve_limit" min="1"></label>
         <label>Поисковых запросов в сутки на аккаунт<input type="number" name="search_limit" min="0"></label>
@@ -255,6 +264,7 @@
         <label>«Мёртвый», если тишина дольше, дней<input type="number" name="dead_days" min="1"></label>
       </div>
       <label class="chk"><input type="checkbox" name="snowball"> Добавлять чаты из ссылок и репостов</label>
+      <label class="chk"><input type="checkbox" name="similar_channels"> Добавлять похожие каналы (рекомендации Telegram)</label>
       <div class="cols3">
         <label>Глубина<input type="number" name="snowball_depth" min="0" max="10"></label>
         <label class="chk"><input type="checkbox" name="snowball_only_target"> Только из целевых живых чатов</label>
@@ -268,6 +278,6 @@
 </main>
 
 <div id="toast" hidden></div>
-<script src="/static/app.js?v=1.0.7"></script>
+<script src="/static/app.js?v=1.0.8"></script>
 </body>
 </html>

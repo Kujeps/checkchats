@@ -83,7 +83,7 @@ async def set_settings(request: Request):
         data.pop("openrouter_key", None)
     data.pop("llm_spent", None)
     ints = {"llm_concurrency", "llm_messages", "llm_msg_chars", "messages_limit", "resolve_limit", "search_limit",
-            "max_flood_sleep", "max_active_accounts", "snowball_depth", "join_limit", "live_threshold", "spam_threshold", "dead_days"}
+            "max_flood_sleep", "max_active_accounts", "snowball_depth", "msg_search_days", "msg_search_pages", "join_limit", "live_threshold", "spam_threshold", "dead_days"}
     for k in list(data):
         if k in ints:
             data[k] = int(data[k])
@@ -395,12 +395,15 @@ async def list_queries():
 
 @app.post("/api/queries")
 async def add_queries(request: Request):
-    text = (await request.json()).get("text") or ""
+    data = await request.json()
+    text = data.get("text") or ""
+    kind = data.get("kind") if data.get("kind") in ("title", "messages", "both") else "both"
     n = 0
     for ln in text.splitlines():
         ln = ln.strip()
         if ln:
-            n += db.q("INSERT OR IGNORE INTO queries(q, added_at) VALUES(?, ?)", (ln[:64], db.now())).rowcount
+            n += db.q("INSERT OR IGNORE INTO queries(q, kind, added_at) VALUES(?, ?, ?)",
+                      (ln[:64], kind, db.now())).rowcount
     return {"added": n}
 
 

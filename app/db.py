@@ -130,6 +130,9 @@ DEFAULTS = {
     "global_proxy_all": True,      # общий прокси и для тех, у кого есть свой
     "snowball": True,              # добавлять чаты из ссылок и репостов
     "snowball_depth": 2,
+    "similar_channels": True,      # добавлять похожие каналы (рекомендации Telegram)
+    "msg_search_days": 14,         # поиск по сообщениям: только за последние N дней
+    "msg_search_pages": 3,         # поиск по сообщениям: страниц по 100 сообщений на запрос
     "snowball_only_target": True,  # брать ссылки только из целевых живых чатов
     "join_private": False,         # вступать в закрытые чаты по инвайтам
     "join_limit": 5,
@@ -170,7 +173,8 @@ MIGRATIONS = [
     ("accounts", "proxy_ok", "INTEGER"),          # 1 работает, 0 нет, NULL не проверяли
     ("accounts", "proxy_info", "TEXT"),           # «socks5, 120 мс» или текст ошибки
     ("accounts", "proxy_checked_at", "REAL"),
-    ("chats", "checked_by", "INTEGER"),            # аккаунт, проверявший чат (у него чат в кэше)
+    ("chats", "checked_by", "INTEGER"),
+    ("queries", "kind", "TEXT"),                  # title | messages | both            # аккаунт, проверявший чат (у него чат в кэше)
 ]
 
 
