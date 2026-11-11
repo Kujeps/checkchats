@@ -79,30 +79,84 @@ def _parse_json(text: str) -> dict:
         return json.loads(m.group(0))
 
 
-async def chat_json(client: httpx.AsyncClient, key: str, model: str, system: str, user: str,
+class RateLimited(Exception):
+    """429: модель перегружена у провайдера или исчерпан лимит — нужно подождать."""
+
+    def __init__(self, msg, retry_after=0):
+        super().__init__(msg)
+        self.retry_after = retry_after
+
+
+class Transient(Exception):
+    """Временный сбой (5xx, таймаут, обрыв) — повторить позже."""
+
+
+TRANSIENT_CODES = {408, 500, 502, 503, 504, 520, 522, 524, 529}
+
+
+def models_from(s: dict) -> list:
+    """Основная модель и резервные; OpenRouter принимает не больше трёх."""
+    out = []
+    for m in [s["model"], *(s.get("fallback_models") or [])]:
+        m = (m or "").strip()
+        if m and m not in out:
+            out.append(m)
+    return out[:3]
+
+
+def _error_text(payload) -> str:
+    err = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(err, dict):
+        raw = (err.get("metadata") or {}).get("raw")
+        return str(raw or err.get("message") or err)[:300]
+    return str(payload)[:300]
+
+
+async def chat_json(client: httpx.AsyncClient, key: str, models, system: str, user: str,
                     max_tokens=600) -> tuple[dict, dict]:
+    models = [models] if isinstance(models, str) else list(models)
     body = {
-        "model": model,
+        "model": models[0],
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         "temperature": 0,
         "max_tokens": max_tokens,
         "response_format": {"type": "json_object"},
         "usage": {"include": True},   # OpenRouter вернёт стоимость запроса
     }
+    if len(models) > 1:
+        body["models"] = models       # при сбое основной OpenRouter сам перейдёт на следующую
     headers = {"Authorization": f"Bearer {key}", "X-Title": "CheckChats"}
-    r = await client.post(f"{API}/chat/completions", json=body, headers=headers, timeout=90)
-    if r.status_code >= 400:
-        raise RuntimeError(f"OpenRouter {r.status_code}: {r.text[:300]}")
-    data = r.json()
-    if "error" in data:
-        raise RuntimeError(f"OpenRouter: {data['error']}")
+    try:
+        r = await client.post(f"{API}/chat/completions", json=body, headers=headers, timeout=90)
+    except (httpx.TimeoutException, httpx.TransportError) as e:
+        raise Transient(f"нет ответа от OpenRouter: {type(e).__name__}")
+    try:
+        data = r.json()
+    except ValueError:
+        data = {"error": {"message": r.text[:300]}}
+    code = r.status_code
+    if code < 400 and isinstance(data, dict) and "error" in data:
+        code = (data["error"] or {}).get("code") if isinstance(data["error"], dict) else 500
+        code = code if isinstance(code, int) else 500
+    if code == 429:
+        try:
+            retry = float(r.headers.get("retry-after") or 0)
+        except ValueError:
+            retry = 0
+        raise RateLimited(f"OpenRouter 429: {_error_text(data)}", retry)
+    if code in TRANSIENT_CODES:
+        raise Transient(f"OpenRouter {code}: {_error_text(data)}")
+    if code >= 400:
+        raise RuntimeError(f"OpenRouter {code}: {_error_text(data)}")
     content = data["choices"][0]["message"].get("content") or ""
-    return _parse_json(content), data.get("usage") or {}
+    usage = data.get("usage") or {}
+    usage["model"] = data.get("model")
+    return _parse_json(content), usage
 
 
-async def analyze(client, key, model, chat, sample, categories, target, msg_chars, msg_limit) -> tuple[dict, dict]:
+async def analyze(client, key, models, chat, sample, categories, target, msg_chars, msg_limit) -> tuple[dict, dict]:
     prompt = build_prompt(chat, sample, categories, target, msg_chars, msg_limit)
-    res, usage = await chat_json(client, key, model, SYSTEM, prompt)
+    res, usage = await chat_json(client, key, models, SYSTEM, prompt)
     cat = str(res.get("category") or "Другое").strip()
     # модель иногда пишет категорию чуть иначе — приводим к ближайшей из списка
     if cat not in categories:
@@ -126,7 +180,7 @@ async def analyze(client, key, model, chat, sample, categories, target, msg_char
     }, usage
 
 
-async def generate_queries(client, key, model, topics: str, cities: str, n: int = 60) -> list:
+async def generate_queries(client, key, models, topics: str, cities: str, n: int = 60) -> list:
     system = ("Ты помогаешь находить публичные Telegram-чаты через встроенный поиск Telegram. "
               "Поиск ищет по названию и username чата, поэтому запросы должны быть короткими "
               "(1-3 слова), как люди называют такие чаты. Ответ — JSON {\"queries\": [..]}.")
@@ -134,7 +188,7 @@ async def generate_queries(client, key, model, topics: str, cities: str, n: int 
             f"Города/регионы (если пусто — без привязки): {cities or '-'}\n"
             f"Придумай {n} разных поисковых запросов на русском и английском, включая сленг "
             "(вб, озон, селлеры, риелторы, мастера и т.п.) и сочетания с городами.")
-    res, _ = await chat_json(client, key, model, system, user, max_tokens=2000)
+    res, _ = await chat_json(client, key, models, system, user, max_tokens=2000)
     out = []
     for x in res.get("queries") or []:
         x = str(x).strip()

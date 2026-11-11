@@ -110,6 +110,8 @@ DEFAULT_CATEGORIES = [
 DEFAULTS = {
     "openrouter_key": "",
     "model": "google/gemini-2.5-flash-lite",
+    # если основная модель перегружена, OpenRouter сам переключится на эти
+    "fallback_models": ["openai/gpt-4.1-nano", "deepseek/deepseek-v4-flash"],
     "llm_enabled": True,
     "llm_concurrency": 5,
     "llm_messages": 40,            # сколько сообщений отдавать ИИ

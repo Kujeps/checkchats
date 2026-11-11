@@ -103,7 +103,7 @@ async def llm_test():
     ]}
     chat = {"type": "group", "title": "Селлеры WB | общение", "about": "Чат продавцов Wildberries", "members": 4200}
     async with httpx.AsyncClient() as c:
-        ai, usage = await llm.analyze(c, s["openrouter_key"], s["model"], chat, sample, s["categories"],
+        ai, usage = await llm.analyze(c, s["openrouter_key"], llm.models_from(s), chat, sample, s["categories"],
                                       s["target_description"], s["llm_msg_chars"], s["llm_messages"])
     return {"result": ai, "usage": usage}
 
@@ -360,7 +360,7 @@ async def gen_queries(request: Request):
     if not s["openrouter_key"]:
         raise HTTPException(400, "Не задан ключ OpenRouter")
     async with httpx.AsyncClient() as c:
-        qs = await llm.generate_queries(c, s["openrouter_key"], s["model"],
+        qs = await llm.generate_queries(c, s["openrouter_key"], llm.models_from(s),
                                         data.get("topics") or s["target_description"], data.get("cities") or "",
                                         int(data.get("n") or 60))
     return {"queries": qs}

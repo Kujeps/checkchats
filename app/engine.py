@@ -375,6 +375,8 @@ class Engine:
         self.s = db.get_settings()
         self.http = None
         self.llm_stats = {"done": 0, "errors": 0, "last_error": None}
+        self.llm_pause_until = 0.0   # общая пауза всех потоков ИИ после 429
+        self.llm_backoff = 0
         self.checking_accounts = False
 
     async def start(self):
@@ -385,6 +387,11 @@ class Engine:
         self.running = True
         self.http = httpx.AsyncClient()
         db.reset_stale()
+        # Чаты, упавшие на перегрузке провайдера в старых версиях, — снова в очередь ИИ
+        n = db.q("UPDATE chats SET llm_status='pending', llm_error=NULL WHERE llm_status='error' "
+                 "AND sample IS NOT NULL AND (llm_error LIKE '%429%' OR llm_error LIKE '%rate-limit%')").rowcount
+        if n:
+            say(f"{n} чатов с ошибкой 429 возвращены в очередь ИИ")
         cond = "status NOT IN ('dead', 'frozen', 'disabled')"
         if not self.s["allow_no_proxy"]:
             cond += " AND proxy IS NOT NULL AND proxy != ''"
@@ -441,17 +448,36 @@ class Engine:
             if not row:
                 await asyncio.sleep(2)
                 continue
+            if time.time() < self.llm_pause_until:
+                await asyncio.sleep(1)
+                continue
             db.q("UPDATE chats SET llm_status='running' WHERE id=?", (row["id"],))
             try:
                 sample = json.loads(row["sample"] or "{}")
-                ai, usage = await llm.analyze(self.http, s["openrouter_key"], s["model"], row, sample,
+                ai, usage = await llm.analyze(self.http, s["openrouter_key"], llm.models_from(s), row, sample,
                                               s["categories"], s["target_description"],
                                               s["llm_msg_chars"], s["llm_messages"])
                 finalize(row["id"], ai, s)
                 self.llm_stats["done"] += 1
+                self.llm_backoff = 0
                 cost = usage.get("cost")
                 if cost:
-                    db.save_settings({"llm_spent": round(float(s.get("llm_spent") or 0) + float(cost), 6)})
+                    # Читаем свежее значение: s мог устареть, пока ждали ответ (потоков несколько)
+                    spent = float(db.get_settings().get("llm_spent") or 0)
+                    db.save_settings({"llm_spent": round(spent + float(cost), 6)})
+            except (llm.RateLimited, llm.Transient) as e:
+                # Перегрузка у провайдера — не ошибка чата: возвращаем в очередь и ждём все вместе
+                db.q("UPDATE chats SET llm_status='pending' WHERE id=?", (row["id"],))
+                if time.time() < self.llm_pause_until:
+                    continue   # пауза уже объявлена другим потоком — не удлиняем её повторно
+                if isinstance(e, llm.RateLimited):
+                    self.llm_backoff = min(120, max(10, self.llm_backoff * 2))
+                    wait = max(e.retry_after, self.llm_backoff)
+                else:
+                    wait = 5
+                what = "лимит запросов" if isinstance(e, llm.RateLimited) else "временный сбой"
+                say(f"ИИ: {what} у провайдера, пауза {wait:.0f} c и повтор ({str(e)[:150]})", "warn")
+                self.llm_pause_until = time.time() + wait
             except Exception as e:  # noqa: BLE001
                 msg = f"{type(e).__name__}: {e}"[:300]
                 self.llm_stats["errors"] += 1
@@ -510,7 +536,8 @@ class Engine:
             "workers": [{"id": w.acc_id, "name": w.name, "state": w.state, "current": w.current}
                         for w in self.workers.values()],
             "queries": {k: v or 0 for k, v in q.items()},
-            "llm": {**self.llm_stats, "spent": db.get_settings().get("llm_spent", 0)},
+            "llm": {**self.llm_stats, "spent": db.get_settings().get("llm_spent", 0),
+                    "pause": max(0, round(self.llm_pause_until - time.time()))},
             "checking_accounts": self.checking_accounts,
         }
 

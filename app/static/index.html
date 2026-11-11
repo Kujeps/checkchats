@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CheckChats</title>
-<link rel="stylesheet" href="/static/style.css?v=1.0.2">
+<link rel="stylesheet" href="/static/style.css?v=1.0.3">
 </head>
 <body>
 <header>
@@ -191,6 +191,9 @@
         <datalist id="modelList"></datalist>
       </label>
       <div class="muted small" id="modelInfo"></div>
+      <label>Резервные модели через запятую (до двух) — если основная перегружена
+        <input name="fallback_models" list="modelList" placeholder="openai/gpt-4.1-nano, deepseek/deepseek-v4-flash">
+      </label>
       <label class="chk"><input type="checkbox" name="llm_enabled"> Анализировать чаты нейросетью</label>
       <div class="cols3">
         <label>Параллельных запросов<input type="number" name="llm_concurrency" min="1" max="50"></label>
@@ -250,6 +253,6 @@
 </main>
 
 <div id="toast" hidden></div>
-<script src="/static/app.js?v=1.0.2"></script>
+<script src="/static/app.js?v=1.0.3"></script>
 </body>
 </html>

@@ -69,7 +69,8 @@ async function refreshStatus() {
 
   const c = s.chats;
   const cards = [
-    ["Всего чатов", c.total], ["В очереди", c.pending], ["Проверено", c.checked], ["Ждут ИИ", c.llm_queue],
+    ["Всего чатов", c.total], ["В очереди", c.pending], ["Проверено", c.checked],
+    [s.llm.pause > 0 ? `Ждут ИИ (пауза ${s.llm.pause} c)` : "Ждут ИИ", c.llm_queue],
     ["Живых", c.live, "live"], ["Целевых", c.target, "target"], ["Целевых живых", c.target_live, "target"],
     ["Слабых", c.low], ["Мёртвых", c.dead], ["Спам/боты", c.spam, "spam"],
     ["Нет доступа / не найдено", (c.private || 0) + (c.not_found || 0)], ["Ошибок", c.error],
@@ -335,6 +336,7 @@ async function loadSettings() {
     const v = settings[el.name];
     if (el.type === "checkbox") el.checked = !!v;
     else if (el.name === "categories") el.value = v.join("\n");
+    else if (el.name === "fallback_models") el.value = v.join(", ");
     else if (el.name !== "openrouter_key") el.value = v;
   }
   $("#keyState").textContent = settings.openrouter_key_set ? "Ключ сохранён (введите новый, чтобы заменить)" : "Ключ не задан";
@@ -358,6 +360,7 @@ $("#settingsForm").addEventListener("submit", run(async (e) => {
     if (!el.name) continue;
     if (el.type === "checkbox") data[el.name] = el.checked;
     else if (el.name === "categories") data[el.name] = el.value.split("\n").map((s) => s.trim()).filter(Boolean);
+    else if (el.name === "fallback_models") data[el.name] = el.value.split(/[,\n]/).map((s) => s.trim()).filter(Boolean).slice(0, 2);
     else data[el.name] = el.value;
   }
   data.target_categories = $$("#targetCats input:checked").map((x) => x.value);
