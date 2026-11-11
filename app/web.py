@@ -329,6 +329,7 @@ async def list_chats(request: Request, page: int = 1, size: int = 50, sort: str 
         m = json.loads(r.pop("metrics") or "{}")
         r["authors"] = m.get("unique_authors")
         r["dialog"] = m.get("dialog_ratio")
+        r["human"] = m.get("human_share")
         r["reason"] = m.get("reason")
     return {"total": total, "rows": rows}
 
@@ -347,6 +348,12 @@ async def retry(request: Request):
     elif what == "llm":
         n = db.q("UPDATE chats SET llm_status='pending', llm_error=NULL WHERE llm_status='error' "
                  "AND sample IS NOT NULL").rowcount
+    elif what == "recheck":
+        # Перечитать уже проверенные чаты тем же аккаунтом (чат у него в кэше — лимит не тратится)
+        n = db.q("""UPDATE chats SET status='pending', attempts=0, error=NULL, llm_status='none',
+                    preferred_account=COALESCE(checked_by, preferred_account),
+                    verdict=NULL, live_score=NULL, spam_score=NULL, is_target=0, category=NULL, topic=NULL,
+                    audience=NULL, summary=NULL WHERE status='checked'""").rowcount
     elif what == "private":
         n = db.q("UPDATE chats SET status='pending', error=NULL WHERE status='private' AND kind='invite'").rowcount
     else:

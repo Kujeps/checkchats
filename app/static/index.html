@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CheckChats</title>
-<link rel="stylesheet" href="/static/style.css?v=1.0.5">
+<link rel="stylesheet" href="/static/style.css?v=1.0.6">
 </head>
 <body>
 <header>
@@ -63,6 +63,7 @@
         <option value="low">Слабые</option>
         <option value="dead">Мёртвые</option>
         <option value="spam">Спам/боты</option>
+        <option value="noconv">Нет общения</option>
         <option value="private">Закрытые</option>
       </select>
       <select id="fCategory"><option value="">Все категории</option></select>
@@ -92,7 +93,7 @@
       <table id="chatsTable">
         <thead><tr>
           <th>Чат</th><th>Тип</th><th class="num">Участн.</th><th class="num">Сообщ./день</th>
-          <th class="num">Авторов</th><th class="num">Живость</th><th class="num">Спам</th><th>Вердикт</th>
+          <th class="num">Людей</th><th class="num">Живость</th><th class="num">Спам</th><th>Вердикт</th>
           <th>Категория / тематика</th><th>Статус</th>
         </tr></thead>
         <tbody></tbody>
@@ -103,6 +104,7 @@
       <span class="spacer"></span>
       <button data-retry="errors">Повторить ошибки</button>
       <button data-retry="llm">Повторить ошибки ИИ</button>
+      <button data-retry="recheck" title="Заново прочитать все проверенные чаты и оценить по новым правилам">Перепроверить все</button>
       <button data-clear="pending" class="ghost">Очистить очередь</button>
       <button data-clear="all" class="ghost danger-text">Удалить все чаты</button>
     </div>
@@ -206,7 +208,7 @@
         <input name="fallback_models" list="modelList" placeholder="openai/gpt-4.1-nano, deepseek/deepseek-v4-flash">
       </label>
       <label class="chk"><input type="checkbox" name="llm_enabled"> Анализировать чаты нейросетью</label>
-      <label class="chk"><input type="checkbox" name="llm_skip_spam"> Не отправлять в ИИ чаты, которые бесплатная проверка уже признала спамом (экономит деньги)</label>
+      <label class="chk"><input type="checkbox" name="llm_skip_spam"> Не отправлять в ИИ спам и чаты, где люди не общаются (по бесплатной проверке; экономит деньги)</label>
       <div class="cols3">
         <label>Параллельных запросов<input type="number" name="llm_concurrency" min="1" max="50"></label>
         <label>Сообщений в ИИ<input type="number" name="llm_messages" min="5" max="200"></label>
@@ -265,6 +267,6 @@
 </main>
 
 <div id="toast" hidden></div>
-<script src="/static/app.js?v=1.0.5"></script>
+<script src="/static/app.js?v=1.0.6"></script>
 </body>
 </html>

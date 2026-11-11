@@ -4,7 +4,7 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.contacts import ResolveUsernameRequest, SearchRequest
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
 from telethon.tl.types import (Channel, ChatInvite, ChatInviteAlready, ChatInvitePeek, InputPeerChannel,
-                               MessageEntityTextUrl, MessageEntityUrl, MessageService, User)
+                               MessageEntityTextUrl, MessageEntityUrl, MessageService, PeerUser, User)
 
 from .links import extract_links
 
@@ -39,11 +39,19 @@ def _conv(msg):
     if msg.reactions and msg.reactions.results:
         reactions = sum(r.count for r in msg.reactions.results)
     sender = msg.sender
+    is_bot = bool(isinstance(sender, User) and sender.bot)
+    # Кто написал: живой человек, бот (или через бота), либо от имени чата/канала —
+    # анонимный админ, пост канала, автопересылка из канала в группу обсуждения
+    if isinstance(msg.from_id, PeerUser):
+        kind = "bot" if is_bot or msg.via_bot_id else "user"
+    else:
+        kind = "chat"
     return {
         "id": msg.id,
         "date": msg.date.timestamp() if msg.date else None,
         "sender": msg.sender_id,
-        "bot": bool(isinstance(sender, User) and sender.bot),
+        "kind": kind,
+        "bot": is_bot,
         "text": text,
         "reply_to": msg.reply_to.reply_to_msg_id if msg.reply_to else None,
         "fwd": msg.fwd_from is not None,

@@ -7,14 +7,14 @@ from openpyxl.utils import get_column_letter
 
 from .paths import DB_PATH, EXPORTS_DIR
 
-VERDICTS = {"live": "Живой", "low": "Слабый", "dead": "Мёртвый", "spam": "Спам/боты", "private": "Закрытый"}
+VERDICTS = {"live": "Живой", "low": "Слабый", "dead": "Мёртвый", "spam": "Спам/боты", "noconv": "Нет общения", "private": "Закрытый"}
 STATUSES = {"pending": "В очереди", "checking": "Проверяется", "checked": "Проверен", "not_found": "Не найден",
             "not_chat": "Не чат", "private": "Нет доступа", "error": "Ошибка", "duplicate": "Дубль"}
-FILLS = {"live": "C6EFCE", "low": "FFEB9C", "dead": "D9D9D9", "spam": "FFC7CE", "private": "DDEBF7"}
+FILLS = {"live": "C6EFCE", "low": "FFEB9C", "dead": "D9D9D9", "spam": "FFC7CE", "noconv": "F4D9C6", "private": "DDEBF7"}
 
 COLUMNS = [
     ("Ссылка", 32), ("Название", 34), ("Тип", 9), ("Участники", 11), ("Онлайн", 9),
-    ("Сообщ./день", 11), ("Последнее сообщение", 18), ("Авторов в выборке", 11), ("Диалогов, %", 10),
+    ("Сообщ./день", 11), ("Последнее сообщение", 18), ("Людей в выборке", 11), ("От людей, %", 10), ("Диалогов, %", 10),
     ("Живость", 9), ("Спам", 7), ("Вердикт", 12), ("Целевой", 9), ("Категория", 28), ("Тематика", 32),
     ("Аудитория", 32), ("Описание чата", 50), ("Вывод ИИ", 60), ("Язык", 6), ("Источник", 24),
     ("Статус", 12), ("Проверен", 17),
@@ -86,7 +86,9 @@ def export(f: dict) -> str:
         vals = [
             ch["link"], ch["title"], {"channel": "Канал", "group": "Группа"}.get(ch["type"], ""),
             ch["members"], ch["online"], ch["msgs_per_day"], _ts(ch["last_msg_at"]),
-            m.get("unique_authors"), round(m["dialog_ratio"] * 100) if m.get("dialog_ratio") is not None else None,
+            m.get("unique_authors"),
+            round(m["human_share"] * 100) if m.get("human_share") is not None else None,
+            round(m["dialog_ratio"] * 100) if m.get("dialog_ratio") is not None else None,
             ch["live_score"], ch["spam_score"], VERDICTS.get(ch["verdict"], ""), "Да" if ch["is_target"] else "",
             ch["category"], ch["topic"], ch["audience"], (ch["about"] or "")[:1000], ch["summary"], ch["language"],
             ch["source"], STATUSES.get(ch["status"], ch["status"]), _ts(ch["checked_at"]),
@@ -102,18 +104,18 @@ def export(f: dict) -> str:
 
     # Сводка по категориям
     s = wb.create_sheet("Сводка")
-    s.append(["Категория", "Всего", "Живых", "Слабых", "Мёртвых", "Спам", "Закрытых", "Участников в живых"])
+    s.append(["Категория", "Всего", "Живых", "Слабых", "Мёртвых", "Спам", "Нет общения", "Закрытых", "Участников в живых"])
     for c in s[1]:
         c.font = Font(bold=True)
     agg = {}
     for ch in rows:
-        a = agg.setdefault(ch["category"] or "— без анализа ИИ —", [0, 0, 0, 0, 0, 0, 0])
+        a = agg.setdefault(ch["category"] or "— без анализа ИИ —", [0, 0, 0, 0, 0, 0, 0, 0])
         a[0] += 1
-        idx = {"live": 1, "low": 2, "dead": 3, "spam": 4, "private": 5}.get(ch["verdict"])
+        idx = {"live": 1, "low": 2, "dead": 3, "spam": 4, "noconv": 5, "private": 6}.get(ch["verdict"])
         if idx:
             a[idx] += 1
         if ch["verdict"] == "live":
-            a[6] += ch["members"] or 0
+            a[7] += ch["members"] or 0
     for cat, a in sorted(agg.items(), key=lambda x: -x[1][1]):
         s.append([cat, *a])
     s.column_dimensions["A"].width = 36

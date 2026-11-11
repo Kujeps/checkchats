@@ -3,7 +3,7 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const fmt = (n) => (n == null ? "—" : Number(n).toLocaleString("ru-RU"));
 
-const VERDICT = { live: "Живой", low: "Слабый", dead: "Мёртвый", spam: "Спам/боты", private: "Закрытый" };
+const VERDICT = { live: "Живой", low: "Слабый", dead: "Мёртвый", spam: "Спам/боты", noconv: "Нет общения", private: "Закрытый" };
 const STATUS = { pending: "в очереди", checking: "проверяется", checked: "проверен", not_found: "не найден",
   not_chat: "не чат", private: "нет доступа", error: "ошибка", duplicate: "дубль" };
 const ACC_STATUS = { new: "новый", active: "активен", flood: "FloodWait", dead: "мёртв", frozen: "заморожен",
@@ -72,7 +72,7 @@ async function refreshStatus() {
     ["Всего чатов", c.total], ["В очереди", c.pending], ["Проверено", c.checked],
     [s.llm.pause > 0 ? `Ждут ИИ (пауза ${s.llm.pause} c)` : "Ждут ИИ", c.llm_queue],
     ["Живых", c.live, "live"], ["Целевых", c.target, "target"], ["Целевых живых", c.target_live, "target"],
-    ["Слабых", c.low], ["Мёртвых", c.dead], ["Спам/боты", c.spam, "spam"],
+    ["Слабых", c.low], ["Мёртвых", c.dead], ["Спам/боты", c.spam, "spam"], ["Нет общения", c.noconv],
     ["Нет доступа / не найдено", (c.private || 0) + (c.not_found || 0)], ["Ошибок", c.error],
   ];
   const accActive = (s.accounts.active || 0) + (s.accounts.new || 0);
@@ -144,7 +144,7 @@ async function loadChats() {
       <td>${r.type === "channel" ? "канал" : r.type === "group" ? "группа" : ""}</td>
       <td class="num">${fmt(r.members)}</td>
       <td class="num">${r.msgs_per_day != null ? Number(r.msgs_per_day).toFixed(1) : "—"}</td>
-      <td class="num">${fmt(r.authors)}</td>
+      <td class="num">${fmt(r.authors)}${r.human != null ? `<div class="sub">${Math.round(r.human * 100)}% от людей</div>` : ""}</td>
       <td class="num">${live ?? "—"}</td>
       <td class="num">${r.spam_score ?? "—"}</td>
       <td>${v}</td>
@@ -182,6 +182,10 @@ $("#btnExport").addEventListener("click", () => {
   window.location = "/api/export?" + new URLSearchParams(chatFilters());
 });
 $$("[data-retry]").forEach((b) => b.addEventListener("click", run(async () => {
+  if (b.dataset.retry === "recheck" && !confirm(
+    "Заново прочитать все проверенные чаты и оценить по новым правилам?\n" +
+    "Подходящие чаты снова пойдут в ИИ (это стоит денег). Перечитываться будут тем же аккаунтом, " +
+    "лимит поиска по username при этом почти не тратится.")) return;
   const r = await api("/api/chats/retry", { json: { what: b.dataset.retry } });
   toast(`Возвращено в очередь: ${r.n}`);
   loadChats();

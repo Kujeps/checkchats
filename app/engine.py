@@ -71,19 +71,21 @@ def _seconds_to_midnight():
 # ---------- сохранение результатов ----------
 
 def _sample(res, metrics, s):
-    """Компактная выборка для ИИ: авторы заменены на u1, u2..., только тексты."""
+    """Компактная выборка для ИИ: люди — u1, u2..., боты и сообщения от имени чата помечены отдельно."""
     ids = {}
 
-    def alias(sid):
-        if sid is None:
-            return None
+    def alias(msg):
+        kind = heuristics.kind_of(msg)
+        if kind != "user":
+            return kind                    # "bot" | "chat"
+        sid = msg.get("sender")
         if sid not in ids:
             ids[sid] = len(ids) + 1
         return ids[sid]
 
     def pack(msgs, limit):
         msgs = sorted(msgs, key=lambda x: x["date"] or 0)[-limit:]
-        by_id = {x["id"]: x.get("sender") for x in msgs}
+        by_id = {x["id"]: x for x in msgs}
         out = []
         for x in msgs:
             if not (x.get("text") or "").strip():
@@ -91,13 +93,14 @@ def _sample(res, metrics, s):
             r = None
             if x.get("reply_to"):
                 r = alias(by_id[x["reply_to"]]) if x["reply_to"] in by_id else "?"
-            out.append({"s": alias(x.get("sender")), "r": r, "text": x["text"][: s["llm_msg_chars"]]})
+            out.append({"s": alias(x), "r": r, "text": x["text"][: s["llm_msg_chars"]]})
         return out
 
     return {
         "messages": pack(res["messages"], s["llm_messages"]),
         "linked": pack(res["linked"], max(10, s["llm_messages"] // 2)),
-        "metrics": {k: metrics.get(k) for k in ("msgs_per_day", "unique_authors", "dup_ratio")},
+        "metrics": {k: metrics.get(k) for k in ("msgs_per_day", "unique_authors", "dup_ratio",
+                                                "human_share", "dialog_ratio")},
         "found": res.get("found") or [],
         "invite_only": res["status"] == "private",
     }
@@ -120,20 +123,22 @@ def save_check(chat, res, acc_id, s):
     sample = _sample(res, metrics, s)
     db.q("""UPDATE chats SET status='checked', error=NULL, tg_id=?, type=?, title=?, about=?, members=?, online=?,
             metrics=?, sample=?, h_live=?, h_spam=?, msgs_per_day=?, last_msg_at=?, checked_at=?,
-            llm_status='pending' WHERE id=?""",
+            checked_by=?, llm_status='pending' WHERE id=?""",
          (res["tg_id"], res["type"], res["title"], res["about"], res["members"], res["online"],
           json.dumps(metrics, ensure_ascii=False), json.dumps(sample, ensure_ascii=False), h_live, h_spam,
-          metrics.get("msgs_per_day"), metrics.get("last_msg_at"), db.now(), chat["id"]))
+          metrics.get("msgs_per_day"), metrics.get("last_msg_at"), db.now(), acc_id, chat["id"]))
 
     has_text = sample["messages"] or sample["linked"] or res["title"]
     dead = metrics.get("verdict") == "dead"
-    if not s["llm_enabled"] or dead or not has_text or skip_as_spam(h_spam, s):
+    if not s["llm_enabled"] or dead or not has_text or skip_cheap(h_spam, metrics.get("verdict"), s):
         finalize(chat["id"], None, s)
 
 
-def skip_as_spam(h_spam, s) -> bool:
-    """Бесплатная проверка уже уверена, что это спам — не тратим деньги на ИИ."""
-    return bool(s.get("llm_skip_spam")) and h_spam is not None and h_spam >= s["spam_threshold"]
+def skip_cheap(h_spam, h_verdict, s) -> bool:
+    """Бесплатная проверка уже уверена: спам или люди не общаются — не тратим деньги на ИИ."""
+    if not s.get("llm_skip_spam"):
+        return False
+    return h_verdict == "noconv" or (h_spam is not None and h_spam >= s["spam_threshold"])
 
 
 def finalize(chat_id, ai, s):
@@ -146,7 +151,7 @@ def finalize(chat_id, ai, s):
     else:
         live, spam, verdict = heuristics.combine(
             row["h_live"], row["h_spam"], (ai or {}).get("live"), (ai or {}).get("spam"),
-            metrics.get("days_since_last"), s["dead_days"], s["live_threshold"], s["spam_threshold"])
+            metrics.get("verdict"), s["live_threshold"], s["spam_threshold"])
     category = (ai or {}).get("category")
     is_target = int(bool(category and category in s["target_categories"]))
     db.q("""UPDATE chats SET llm_status=?, llm_error=NULL, category=?, topic=?, audience=?, summary=?, language=?,
@@ -492,7 +497,7 @@ class Engine:
             if not row:
                 await asyncio.sleep(2)
                 continue
-            if skip_as_spam(row["h_spam"], s):
+            if skip_cheap(row["h_spam"], json.loads(row["metrics"] or "{}").get("verdict"), s):
                 # уже стоял в очереди до включения настройки
                 finalize(row["id"], None, s)
                 continue
@@ -572,7 +577,7 @@ class Engine:
                 SUM(status='private') private, SUM(status='error') error,
                 SUM(llm_status IN ('pending','running') AND status='checked') llm_queue,
                 SUM(verdict='live') live, SUM(verdict='low') low, SUM(verdict='dead') dead,
-                SUM(verdict='spam') spam, SUM(is_target=1) target, SUM(is_target=1 AND verdict='live') target_live
+                SUM(verdict='spam') spam, SUM(verdict='noconv') noconv, SUM(is_target=1) target, SUM(is_target=1 AND verdict='live') target_live
                 FROM chats""").items():
             st[k] = v or 0
         accs = db.all_("SELECT status, COUNT(*) n FROM accounts GROUP BY status")

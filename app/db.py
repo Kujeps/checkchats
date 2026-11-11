@@ -113,7 +113,7 @@ DEFAULTS = {
     # если основная модель перегружена, OpenRouter сам переключится на эти
     "fallback_models": ["openai/gpt-4.1-nano", "deepseek/deepseek-v4-flash"],
     "llm_enabled": True,
-    "llm_skip_spam": True,         # не отправлять в ИИ то, что эвристика уже признала спамом
+    "llm_skip_spam": True,         # не отправлять в ИИ спам и чаты, где люди не общаются
     "llm_concurrency": 5,
     "llm_messages": 40,            # сколько сообщений отдавать ИИ
     "llm_msg_chars": 300,          # обрезка каждого сообщения
@@ -169,6 +169,7 @@ MIGRATIONS = [
     ("accounts", "proxy_ok", "INTEGER"),          # 1 работает, 0 нет, NULL не проверяли
     ("accounts", "proxy_info", "TEXT"),           # «socks5, 120 мс» или текст ошибки
     ("accounts", "proxy_checked_at", "REAL"),
+    ("chats", "checked_by", "INTEGER"),            # аккаунт, проверявший чат (у него чат в кэше)
 ]
 
 

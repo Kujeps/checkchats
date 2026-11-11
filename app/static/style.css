@@ -1,15 +1,15 @@
 :root {
   --bg: #f4f6f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7385; --line: #e3e7ee;
   --accent: #2f6fde; --accent-text: #fff; --danger: #d64545; --input: #fff;
-  --live: #1f9d55; --low: #c99200; --dead: #8a8f99; --spam: #d64545; --private: #3b7ddd;
-  --live-bg: #e3f6ea; --low-bg: #fff4d6; --dead-bg: #eceef1; --spam-bg: #fde6e6; --private-bg: #e5eefc;
+  --live: #1f9d55; --low: #c99200; --dead: #8a8f99; --spam: #d64545; --private: #3b7ddd; --noconv: #b5602a;
+  --live-bg: #e3f6ea; --low-bg: #fff4d6; --dead-bg: #eceef1; --spam-bg: #fde6e6; --private-bg: #e5eefc; --noconv-bg: #fbeadf;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #14171d; --panel: #1c2028; --text: #e6e9ef; --muted: #9098a8; --line: #2c323d;
     --accent: #4d8bf0; --input: #232833; --danger: #ef6464;
-    --live-bg: #183626; --low-bg: #3a3014; --dead-bg: #2a2e36; --spam-bg: #3d1e1e; --private-bg: #1b2b46;
-    --live: #4cc983; --low: #e5b43c; --spam: #ef6464; --private: #6fa2f2; --dead: #9aa0aa;
+    --live-bg: #183626; --low-bg: #3a3014; --dead-bg: #2a2e36; --spam-bg: #3d1e1e; --private-bg: #1b2b46; --noconv-bg: #3a2618;
+    --live: #4cc983; --low: #e5b43c; --spam: #ef6464; --private: #6fa2f2; --noconv: #e39a62; --dead: #9aa0aa;
   }
 }
 * { box-sizing: border-box; }
@@ -69,6 +69,7 @@ td .sub { color: var(--muted); font-size: 12px; max-width: 420px; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .v-live { background: var(--live-bg); color: var(--live); } .v-low { background: var(--low-bg); color: var(--low); }
 .v-dead { background: var(--dead-bg); color: var(--dead); } .v-spam { background: var(--spam-bg); color: var(--spam); }
+.v-noconv { background: var(--noconv-bg); color: var(--noconv); }
 .v-private { background: var(--private-bg); color: var(--private); }
 .tgt { color: var(--accent); font-weight: 700; }
 .pill { padding: 4px 10px; border-radius: 999px; background: var(--dead-bg); color: var(--muted); font-size: 12px; font-weight: 600; }
