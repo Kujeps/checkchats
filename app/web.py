@@ -308,7 +308,8 @@ async def upload_chats(files: list[UploadFile] = File(...)):
     return out
 
 
-SORTS = {"live": "live_score DESC", "members": "members DESC", "activity": "msgs_per_day DESC",
+SORTS = {"geo": "CASE country WHEN 'RU' THEN 0 WHEN '?' THEN 2 ELSE 1 END, country, city",
+         "live": "live_score DESC", "members": "members DESC", "activity": "msgs_per_day DESC",
          "recent": "checked_at DESC", "added": "id DESC", "title": "title"}
 
 
@@ -322,6 +323,7 @@ async def list_chats(request: Request, page: int = 1, size: int = 50, sort: str 
     order = SORTS.get(sort, SORTS["live"])
     rows = db.all_(f"""SELECT id, link, value, title, type, members, online, msgs_per_day, last_msg_at, status, error,
                        live_score, spam_score, h_live, verdict, is_target, category, topic, summary, about, source,
+                       country, city,
                        llm_status, llm_error, metrics FROM chats WHERE {where}
                        ORDER BY {order} NULLS LAST, id LIMIT ? OFFSET ?""",
                    args + [size, (max(page, 1) - 1) * size])

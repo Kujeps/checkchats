@@ -147,6 +147,10 @@ DEFAULTS = {
     ],
     "target_description": "Продавцы на маркетплейсах, риелторы, люди, оказывающие услуги, "
                           "предприниматели малого бизнеса",
+    "target_countries": ["RU"],    # целевыми считаются только чаты из этих стран (пусто — любые)
+    "geo_unknown_ok": True,        # чаты с неопределённой страной тоже считать подходящими
+    "run_search": True,            # что делают аккаунты: ищут новые чаты…
+    "run_check": True,             # …и/или проверяют чаты из очереди
     "live_threshold": 50,
     "spam_threshold": 60,
     "dead_days": 30,
@@ -161,6 +165,7 @@ def conn() -> sqlite3.Connection:
     if _conn is None:
         _conn = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)
         _conn.row_factory = sqlite3.Row
+        add_functions(_conn)
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA synchronous=NORMAL")
         _conn.executescript(SCHEMA)
@@ -174,7 +179,9 @@ MIGRATIONS = [
     ("accounts", "proxy_info", "TEXT"),           # «socks5, 120 мс» или текст ошибки
     ("accounts", "proxy_checked_at", "REAL"),
     ("chats", "checked_by", "INTEGER"),
-    ("queries", "kind", "TEXT"),                  # title | messages | both            # аккаунт, проверявший чат (у него чат в кэше)
+    ("queries", "kind", "TEXT"),                  # title | messages | both
+    ("chats", "country", "TEXT"),                 # код страны или «?»
+    ("chats", "city", "TEXT"),            # аккаунт, проверявший чат (у него чат в кэше)
 ]
 
 
@@ -183,6 +190,11 @@ def _migrate(c):
         cols = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
         if col not in cols:
             c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+
+
+def add_functions(c):
+    """ulower(): нижний регистр и для кириллицы (встроенный LOWER/LIKE в SQLite понимают только латиницу)."""
+    c.create_function("ulower", 1, lambda s: s.lower() if isinstance(s, str) else s, deterministic=True)
 
 
 def q(sql, args=()):

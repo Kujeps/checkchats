@@ -3,12 +3,14 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const fmt = (n) => (n == null ? "—" : Number(n).toLocaleString("ru-RU"));
 
+const COUNTRY = { RU: "Россия", UA: "Украина", KZ: "Казахстан", BY: "Беларусь", UZ: "Узбекистан", KG: "Киргизия",
+  TJ: "Таджикистан", AM: "Армения", GE: "Грузия", AZ: "Азербайджан", MD: "Молдова", "?": "—" };
 const VERDICT = { live: "Живой", low: "Слабый", dead: "Мёртвый", spam: "Спам/боты", noconv: "Нет общения", private: "Закрытый" };
 const STATUS = { pending: "в очереди", checking: "проверяется", checked: "проверен", not_found: "не найден",
   not_chat: "не чат", private: "нет доступа", error: "ошибка", duplicate: "дубль" };
 const ACC_STATUS = { new: "новый", active: "активен", flood: "FloodWait", dead: "мёртв", frozen: "заморожен",
   proxy_error: "нет связи", disabled: "отключён", working: "работает", idle: "ждёт задач", limit: "лимит на сегодня",
-  connecting: "подключение", queue: "в очереди", search: "ищет чаты", starting: "старт", stopped: "остановлен" };
+  connecting: "подключение", queue: "в очереди", paused: "режимы выключены", search: "ищет чаты", starting: "старт", stopped: "остановлен" };
 
 let settings = null;
 let page = 1;
@@ -65,6 +67,8 @@ async function refreshStatus() {
   $("#runState").textContent = s.stopping ? "останавливается…" : s.running ? "работает" : "остановлено";
   $("#runState").classList.toggle("on", s.running);
   $("#btnStart").hidden = s.running;
+  for (const [id, key] of [["#modeSearch", "search"], ["#modeCheck", "check"]])
+    if (document.activeElement !== $(id)) $(id).checked = s.modes[key];
   $("#btnStop").hidden = !s.running;
 
   const c = s.chats;
@@ -106,7 +110,19 @@ async function refreshStatus() {
   }
 }
 
-$("#btnStart").addEventListener("click", run(async () => { await api("/api/start", { json: {} }); refreshStatus(); }));
+$("#btnStart").addEventListener("click", run(async () => {
+  if (!$("#modeSearch").checked && !$("#modeCheck").checked)
+    return toast("Включите «Поиск», «Проверку» или оба режима — иначе аккаунтам нечего делать");
+  await api("/api/start", { json: {} });
+  refreshStatus();
+}));
+// Режимы можно переключать и на ходу — аккаунты подхватят их в течение нескольких секунд
+for (const [id, key] of [["#modeSearch", "run_search"], ["#modeCheck", "run_check"]])
+  $(id).addEventListener("change", run(async (e) => {
+    await api("/api/settings", { json: { [key]: e.target.checked } });
+    toast(e.target.checked ? `${key === "run_search" ? "Поиск" : "Проверка"} включен${key === "run_search" ? "" : "а"}`
+                           : `${key === "run_search" ? "Поиск" : "Проверка"} выключен${key === "run_search" ? "" : "а"}`);
+  }));
 $("#btnStop").addEventListener("click", run(async () => {
   $("#btnStop").disabled = true;
   try { await api("/api/stop", { json: {} }); } finally { $("#btnStop").disabled = false; }
@@ -118,6 +134,7 @@ function chatFilters() {
   const f = {
     search: $("#fSearch").value.trim(), verdict: $("#fVerdict").value, category: $("#fCategory").value,
     type: $("#fType").value, status: $("#fStatus").value, min_members: $("#fMinMembers").value,
+    country: $("#fCountry").value, city: $("#fCity").value.trim(),
     target: $("#fTarget").checked ? "1" : "",
   };
   return Object.fromEntries(Object.entries(f).filter(([, v]) => v));
@@ -148,6 +165,7 @@ async function loadChats() {
         ${r.is_target ? ' <span class="tgt" title="Целевая категория">●</span>' : ""}
         <div class="sub">${esc(r.link.replace("https://", ""))}${r.source && r.source !== "import" ? " · " + esc(r.source) : ""}</div></td>
       <td>${r.type === "channel" ? "канал" : r.type === "group" ? "группа" : ""}</td>
+      <td>${r.country ? esc(COUNTRY[r.country] || r.country) : ""}${r.city ? `<div class="sub">${esc(r.city)}</div>` : ""}</td>
       <td class="num">${fmt(r.members)}</td>
       <td class="num">${r.msgs_per_day != null ? Number(r.msgs_per_day).toFixed(1) : "—"}</td>
       <td class="num">${fmt(r.authors)}${r.human != null ? `<div class="sub">${Math.round(r.human * 100)}% от людей</div>` : ""}</td>
@@ -157,15 +175,15 @@ async function loadChats() {
       <td>${esc(r.category || "")}<div class="sub" title="${esc(r.summary || r.about || "")}">${esc(r.topic || "")}</div></td>
       <td>${esc(st)}${err ? `<div class="sub danger-text" title="${esc(err)}">${esc(err.slice(0, 60))}</div>` : ""}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="10" class="muted">Пусто</td></tr>`;
+  }).join("") || `<tr><td colspan="11" class="muted">Пусто</td></tr>`;
 }
 
 let filterTimer;
-["#fSearch", "#fMinMembers"].forEach((s) => $(s).addEventListener("input", () => {
+["#fSearch", "#fMinMembers", "#fCity"].forEach((s) => $(s).addEventListener("input", () => {
   clearTimeout(filterTimer);
   filterTimer = setTimeout(() => { page = 1; run(loadChats)(); }, 350);
 }));
-["#fVerdict", "#fCategory", "#fType", "#fStatus", "#fTarget", "#fSort"].forEach((s) =>
+["#fVerdict", "#fCategory", "#fType", "#fCountry", "#fStatus", "#fTarget", "#fSort"].forEach((s) =>
   $(s).addEventListener("change", () => { page = 1; run(loadChats)(); }));
 $("#prevPage").addEventListener("click", () => { if (page > 1) { page--; run(loadChats)(); } });
 $("#nextPage").addEventListener("click", () => { page++; run(loadChats)(); });
@@ -391,7 +409,7 @@ async function loadSettings() {
     const v = settings[el.name];
     if (el.type === "checkbox") el.checked = !!v;
     else if (el.name === "categories") el.value = v.join("\n");
-    else if (el.name === "fallback_models") el.value = v.join(", ");
+    else if (el.name === "fallback_models" || el.name === "target_countries") el.value = v.join(", ");
     else if (el.name !== "openrouter_key") el.value = v;
   }
   $("#keyState").textContent = settings.openrouter_key_set ? "Ключ сохранён (введите новый, чтобы заменить)" : "Ключ не задан";
@@ -416,6 +434,7 @@ $("#settingsForm").addEventListener("submit", run(async (e) => {
     if (el.type === "checkbox") data[el.name] = el.checked;
     else if (el.name === "categories") data[el.name] = el.value.split("\n").map((s) => s.trim()).filter(Boolean);
     else if (el.name === "fallback_models") data[el.name] = el.value.split(/[,\n]/).map((s) => s.trim()).filter(Boolean).slice(0, 2);
+    else if (el.name === "target_countries") data[el.name] = el.value.split(/[,\s]+/).map((s) => s.trim().toUpperCase()).filter(Boolean);
     else data[el.name] = el.value;
   }
   data.target_categories = $$("#targetCats input:checked").map((x) => x.value);

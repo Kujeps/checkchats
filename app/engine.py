@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 import httpx
 from telethon import errors
 
-from . import db, heuristics, llm, proxycheck
+from . import db, geo, heuristics, llm, proxycheck
 from .accounts import effective_proxy, make_client
 from .checker import Checker, ChatGone, NeedResolve
 from .proxycheck import net_error_text
@@ -121,6 +121,8 @@ def save_check(chat, res, acc_id, s):
         metrics = heuristics.compute(res["messages"], res["type"], res["members"], res["online"],
                                      res["linked"], dead_days=s["dead_days"])
         h_live, h_spam = metrics["live"], metrics["spam"]
+    texts = [x.get("text") or "" for x in res["messages"] + res["linked"]]
+    metrics["geo"] = geo.guess(texts, res["title"] or "", res["about"] or "")
     sample = _sample(res, metrics, s)
     db.q("""UPDATE chats SET status='checked', error=NULL, tg_id=?, type=?, title=?, about=?, members=?, online=?,
             metrics=?, sample=?, h_live=?, h_spam=?, msgs_per_day=?, last_msg_at=?, checked_at=?,
@@ -142,6 +144,16 @@ def skip_cheap(h_spam, h_verdict, s) -> bool:
     return h_verdict == "noconv" or (h_spam is not None and h_spam >= s["spam_threshold"])
 
 
+def country_ok(country, s) -> bool:
+    """Подходит ли страна под «Целевые страны» из настроек."""
+    allowed = [c.strip().upper() for c in s.get("target_countries") or [] if c.strip()]
+    if not allowed:
+        return True
+    if not country or country == "?":
+        return bool(s.get("geo_unknown_ok"))
+    return country in allowed
+
+
 def finalize(chat_id, ai, s):
     """Итоговый вердикт; ai — результат llm.analyze или None."""
     row = db.one("SELECT * FROM chats WHERE id=?", (chat_id,))
@@ -154,12 +166,14 @@ def finalize(chat_id, ai, s):
             row["h_live"], row["h_spam"], (ai or {}).get("live"), (ai or {}).get("spam"),
             metrics.get("verdict"), s["live_threshold"], s["spam_threshold"])
     category = (ai or {}).get("category")
-    is_target = int(bool(category and category in s["target_categories"]))
+    country, city = geo.combine(metrics.get("geo"), ai)
+    is_target = int(bool(category and category in s["target_categories"]) and country_ok(country, s))
     db.q("""UPDATE chats SET llm_status=?, llm_error=NULL, category=?, topic=?, audience=?, summary=?, language=?,
-            llm_live=?, llm_spam=?, live_score=?, spam_score=?, verdict=?, is_target=?, sample=? WHERE id=?""",
+            llm_live=?, llm_spam=?, live_score=?, spam_score=?, verdict=?, is_target=?, country=?, city=?,
+            sample=? WHERE id=?""",
          ("done" if ai else "skipped", category, (ai or {}).get("topic"), (ai or {}).get("audience"),
           (ai or {}).get("summary"), (ai or {}).get("language"), (ai or {}).get("live"), (ai or {}).get("spam"),
-          live, spam, verdict, is_target, row["sample"] if s["keep_sample"] else None, chat_id))
+          live, spam, verdict, is_target, country, city, row["sample"] if s["keep_sample"] else None, chat_id))
 
     # «Снежный ком»: ссылки, репосты и похожие каналы из подходящих чатов идут в очередь.
     # Проверять их будет тот же аккаунт — они уже в его кэше и не тратят лимит.
@@ -262,6 +276,18 @@ class Worker:
     def use_search(self):
         db.q("UPDATE accounts SET searches_today=searches_today+1 WHERE id=?", (self.acc_id,))
 
+    def _has_work(self, s) -> bool:
+        """Есть ли аккаунту чем заняться в включённых режимах (поиск / проверка)."""
+        if s["run_check"] and self.can_resolve():
+            return True
+        return bool(s["run_search"] and self.can_search()
+                    and db.one("SELECT 1 AS x FROM queries WHERE status='pending' LIMIT 1"))
+
+    def _limited(self, s) -> bool:
+        """Во всех включённых режимах дневные лимиты исчерпаны."""
+        modes = ([self.can_resolve()] if s["run_check"] else []) + ([self.can_search()] if s["run_search"] else [])
+        return bool(modes) and not any(modes)
+
     def take_search(self) -> bool:
         """Списать один поисковый запрос из дневного лимита, если он ещё есть."""
         if not self.can_search():
@@ -344,10 +370,16 @@ class Worker:
                     if acc["status"] == "flood":
                         self._set("active")
                     continue
-                if not self.can_resolve():
+                s = db.get_settings()
+                if self._limited(s):
                     self.state = "limit"
                     self._set("active", "дневной лимит исчерпан")
                     await self._sleep(min(_seconds_to_midnight(), 600))
+                    continue
+                if not self._has_work(s):
+                    # нечем заняться в выбранных режимах — ждём без места в очереди
+                    self.state = "paused" if not (s["run_check"] or s["run_search"]) else "idle"
+                    await self._sleep(5)
                     continue
                 self.state = "queue"
                 if not await self.engine.slots.acquire(self.engine):
@@ -376,14 +408,21 @@ class Worker:
         self.need_rest = False
         while not self.engine.stopping:
             s = self.engine.s = db.get_settings()
-            if await self._maybe_search(checker, s):
+            if s["run_search"] and await self._maybe_search(checker, s):
                 if self.need_rest:
                     return "rest"
                 await self._pause(s)
                 continue
-            if not self.can_resolve():
-                say(f"[{self.name}] дневной лимит исчерпан — уступает место", "info")
-                return "limit"
+            if not s["run_check"] or not self.can_resolve():
+                if self._has_work(s):
+                    # проверять нечего или лимит кончился, но ещё есть поисковые запросы
+                    self.state = "idle"
+                    await self._sleep(5)
+                    continue
+                if self._limited(s):
+                    say(f"[{self.name}] дневной лимит исчерпан — уступает место", "info")
+                    return "limit"
+                return "idle"
             chat = self._claim()
             if not chat:
                 self.state = "idle"
@@ -610,7 +649,7 @@ class Engine:
     async def _llm_loop(self):
         while not self.stopping:
             s = db.get_settings()
-            if not s["llm_enabled"] or not s["openrouter_key"]:
+            if not s["llm_enabled"] or not s["openrouter_key"] or not s["run_check"]:
                 await asyncio.sleep(3)
                 continue
             row = db.one("SELECT * FROM chats WHERE llm_status='pending' AND status='checked' ORDER BY id LIMIT 1")
@@ -709,6 +748,7 @@ class Engine:
             "accounts": {r["status"]: r["n"] for r in accs},
             "workers": [{"id": w.acc_id, "name": w.name, "state": w.state, "current": w.current}
                         for w in self.workers.values()],
+            "modes": {"search": bool(db.get_settings()["run_search"]), "check": bool(db.get_settings()["run_check"])},
             "slots": {"active": self.slots.active, "limit": Slots.limit(), "waiting": len(self.slots.waiting)},
             "queries": {k: v or 0 for k, v in q.items()},
             "llm": {**self.llm_stats, "spent": db.get_settings().get("llm_spent", 0),

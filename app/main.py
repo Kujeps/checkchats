@@ -7,7 +7,7 @@ import webbrowser
 
 import uvicorn
 
-from . import db
+from . import db, geo
 from .engine import engine
 from .paths import DATA_DIR
 
@@ -33,6 +33,7 @@ async def _serve():
     from .web import app
     db.conn()
     db.reset_stale()
+    geo.backfill(db)
     port = _free_port()
     config = uvicorn.Config(app, host=HOST, port=port, log_level="warning")
     server = uvicorn.Server(config)

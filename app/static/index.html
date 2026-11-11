@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CheckChats</title>
-<link rel="stylesheet" href="/static/style.css?v=1.0.8">
+<link rel="stylesheet" href="/static/style.css?v=1.0.9">
 </head>
 <body>
 <header>
@@ -17,6 +17,8 @@
     <button data-tab="settings">Настройки</button>
   </nav>
   <div class="run">
+    <label class="chk" title="Аккаунты ищут новые чаты по запросам с вкладки «Поиск чатов»"><input type="checkbox" id="modeSearch"> Поиск</label>
+    <label class="chk" title="Аккаунты проверяют чаты из очереди, затем анализ ИИ"><input type="checkbox" id="modeCheck"> Проверка</label>
     <span id="runState" class="pill">остановлено</span>
     <button id="btnStart" class="primary">▶ Запустить</button>
     <button id="btnStop" class="danger" hidden>■ Остановить</button>
@@ -68,6 +70,14 @@
       </select>
       <select id="fCategory"><option value="">Все категории</option></select>
       <select id="fType"><option value="">Каналы и группы</option><option value="group">Группы</option><option value="channel">Каналы</option></select>
+      <select id="fCountry">
+        <option value="">Любая страна</option>
+        <option value="RU">Только Россия</option>
+        <option value="RU?">Россия и неопределённые</option>
+        <option value="unknown">Страна не определена</option>
+        <option value="other">Другие страны</option>
+      </select>
+      <input id="fCity" placeholder="Город" class="short">
       <select id="fStatus">
         <option value="">Любой статус</option>
         <option value="pending">В очереди</option>
@@ -85,6 +95,7 @@
         <option value="activity">По активности</option>
         <option value="recent">Недавно проверенные</option>
         <option value="added">Недавно добавленные</option>
+        <option value="geo">По гео</option>
       </select>
       <button id="btnExport" class="primary">⬇ Excel по фильтру</button>
     </div>
@@ -92,7 +103,7 @@
     <div class="table-wrap">
       <table id="chatsTable">
         <thead><tr>
-          <th>Чат</th><th>Тип</th><th class="num">Участн.</th><th class="num">Сообщ./день</th>
+          <th>Чат</th><th>Тип</th><th>Гео</th><th class="num">Участн.</th><th class="num">Сообщ./день</th>
           <th class="num">Людей</th><th class="num">Живость</th><th class="num">Спам</th><th>Вердикт</th>
           <th>Категория / тематика</th><th>Статус</th>
         </tr></thead>
@@ -229,6 +240,10 @@
       <h3>Кого ищем</h3>
       <label>Описание целевой аудитории (для ИИ)<textarea name="target_description" rows="3"></textarea></label>
       <label>Категории (по одной на строку)<textarea name="categories" rows="8"></textarea></label>
+      <label>Целевые страны — коды через запятую, пусто — любые
+        <input name="target_countries" placeholder="RU">
+      </label>
+      <label class="chk"><input type="checkbox" name="geo_unknown_ok"> Чаты, где страну определить не удалось, тоже считать целевыми</label>
       <div>Целевые категории:</div>
       <div id="targetCats" class="checks"></div>
     </div>
@@ -278,6 +293,6 @@
 </main>
 
 <div id="toast" hidden></div>
-<script src="/static/app.js?v=1.0.8"></script>
+<script src="/static/app.js?v=1.0.9"></script>
 </body>
 </html>

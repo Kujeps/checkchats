@@ -5,6 +5,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from .db import add_functions
+from .geo import COUNTRY_NAMES
 from .paths import DB_PATH, EXPORTS_DIR
 
 VERDICTS = {"live": "Живой", "low": "Слабый", "dead": "Мёртвый", "spam": "Спам/боты", "noconv": "Нет общения", "private": "Закрытый"}
@@ -13,7 +15,7 @@ STATUSES = {"pending": "В очереди", "checking": "Проверяется"
 FILLS = {"live": "C6EFCE", "low": "FFEB9C", "dead": "D9D9D9", "spam": "FFC7CE", "noconv": "F4D9C6", "private": "DDEBF7"}
 
 COLUMNS = [
-    ("Ссылка", 32), ("Название", 34), ("Тип", 9), ("Участники", 11), ("Онлайн", 9),
+    ("Ссылка", 32), ("Название", 34), ("Тип", 9), ("Страна", 14), ("Город", 16), ("Участники", 11), ("Онлайн", 9),
     ("Сообщ./день", 11), ("Последнее сообщение", 18), ("Людей в выборке", 11), ("От людей, %", 10), ("Диалогов, %", 10),
     ("Живость", 9), ("Спам", 7), ("Вердикт", 12), ("Целевой", 9), ("Категория", 28), ("Тематика", 32),
     ("Аудитория", 32), ("Описание чата", 50), ("Вывод ИИ", 60), ("Язык", 6), ("Источник", 24),
@@ -29,6 +31,18 @@ def build_filter(f: dict):
         args += vs
     if f.get("target"):
         where.append("is_target=1")
+    geo_f = f.get("country")
+    if geo_f == "RU":
+        where.append("country='RU'")
+    elif geo_f == "RU?":
+        where.append("(country='RU' OR country='?' OR country IS NULL)")
+    elif geo_f == "unknown":
+        where.append("(country='?' OR country IS NULL)")
+    elif geo_f == "other":
+        where.append("country IS NOT NULL AND country NOT IN ('RU', '?')")
+    if f.get("city"):
+        where.append("ulower(city) LIKE ?")
+        args.append(f"%{f['city'].lower()}%")
     if f.get("category"):
         where.append("category=?")
         args.append(f["category"])
@@ -45,8 +59,8 @@ def build_filter(f: dict):
         where.append("live_score>=?")
         args.append(int(f["min_live"]))
     if f.get("search"):
-        where.append("(title LIKE ? OR value LIKE ? OR topic LIKE ? OR about LIKE ?)")
-        args += [f"%{f['search']}%"] * 4
+        where.append("(ulower(title) LIKE ? OR ulower(value) LIKE ? OR ulower(topic) LIKE ? OR ulower(about) LIKE ?)")
+        args += [f"%{f['search'].lower()}%"] * 4
     if f.get("source"):
         where.append("source LIKE ?")
         args.append(f"{f['source']}%")
@@ -64,6 +78,7 @@ def export(f: dict) -> str:
     where, args = build_filter(f)
     c = sqlite3.connect(DB_PATH)
     c.row_factory = sqlite3.Row
+    add_functions(c)
     try:
         rows = [dict(r) for r in c.execute(
             f"SELECT * FROM chats WHERE {where} ORDER BY is_target DESC, live_score DESC, members DESC", args)]
@@ -85,6 +100,7 @@ def export(f: dict) -> str:
         m = json.loads(ch["metrics"] or "{}")
         vals = [
             ch["link"], ch["title"], {"channel": "Канал", "group": "Группа"}.get(ch["type"], ""),
+            COUNTRY_NAMES.get(ch["country"], ch["country"]) if ch["country"] else "", ch["city"] or "",
             ch["members"], ch["online"], ch["msgs_per_day"], _ts(ch["last_msg_at"]),
             m.get("unique_authors"),
             round(m["human_share"] * 100) if m.get("human_share") is not None else None,
